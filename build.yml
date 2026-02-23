@@ -1,0 +1,77 @@
+name: Build Installers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime joblib pystray plyer pywin32
+
+      - name: Build exe
+        run: |
+          pyinstaller --onefile --windowed --name AIScan `
+            --add-data "models;models" `
+            --hidden-import sklearn.ensemble._forest `
+            --hidden-import onnxruntime `
+            --hidden-import watchdog.observers.winapi `
+            --hidden-import pystray._win32 `
+            --hidden-import win32gui --hidden-import win32clipboard `
+            --hidden-import plyer.platforms.win.notification `
+            --exclude-module matplotlib --exclude-module scipy --exclude-module pandas `
+            agent_standalone.py
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIScan-Windows
+          path: dist/AIScan.exe
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime joblib rumps plyer
+
+      - name: Build app
+        run: |
+          pyinstaller --onefile --windowed --name AIScan \
+            --add-data "models:models" \
+            --hidden-import sklearn.ensemble._forest \
+            --hidden-import onnxruntime \
+            --hidden-import watchdog.observers.fsevents \
+            --hidden-import rumps \
+            --hidden-import plyer.platforms.macosx.notification \
+            --exclude-module matplotlib --exclude-module scipy --exclude-module pandas \
+            --osx-bundle-identifier com.aiscan.agent \
+            agent_standalone.py
+
+      - name: Make DMG
+        run: |
+          mkdir /tmp/dmg
+          cp -r dist/AIScan.app /tmp/dmg/
+          ln -s /Applications /tmp/dmg/Applications
+          hdiutil create -volname AIScan -srcfolder /tmp/dmg -ov -format UDZO AIScan-macOS.dmg
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIScan-macOS
+          path: AIScan-macOS.dmg
