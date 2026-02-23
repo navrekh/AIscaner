@@ -1,0 +1,41 @@
+{
+  "model_name": "RandomForest",
+  "n_features": 25,
+  "feature_names": [
+    "mean_sentence_length",
+    "std_sentence_length",
+    "burstiness_cv",
+    "sentence_count",
+    "long_sentence_ratio",
+    "type_token_ratio",
+    "vocabulary_richness",
+    "avg_word_length",
+    "transition_density",
+    "hedge_density",
+    "filler_density",
+    "passive_voice_ratio",
+    "comma_per_sentence",
+    "colon_ratio",
+    "em_dash_ratio",
+    "bigram_repetition_ratio",
+    "trigram_repetition_ratio",
+    "sentence_start_entropy",
+    "paragraph_length_cv",
+    "bullet_density",
+    "hallucination_marker_count",
+    "filler_phrase_count",
+    "formal_register_score",
+    "word_entropy",
+    "char_entropy"
+  ],
+  "classes": [
+    "Human",
+    "AI-Generated",
+    "Mixed"
+  ],
+  "test_accuracy": 0.996,
+  "cv_accuracy_mean": 1.0,
+  "cv_accuracy_std": 0.0,
+  "n_training_samples": 1000,
+  "version": "1.0.0"
+}
