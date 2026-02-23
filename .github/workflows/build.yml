@@ -1,9 +1,11 @@
 name: Build Installers
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
 
 jobs:
 
@@ -17,20 +19,57 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime joblib pystray plyer pywin32
+        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime joblib pystray plyer pywin32 skl2onnx
+
+      - name: Train model and create models folder
+        run: |
+          python -c "
+          import os, json
+          from pathlib import Path
+          import numpy as np
+          from sklearn.ensemble import RandomForestClassifier
+          from skl2onnx import convert_sklearn
+          from skl2onnx.common.data_types import FloatTensorType
+          import joblib
+
+          Path('models').mkdir(exist_ok=True)
+
+          # Generate training data
+          np.random.seed(42)
+          n = 400
+          X_human = np.random.randn(n, 25) * 0.8
+          X_human[:, 2] += 3
+          X_ai = np.random.randn(n, 25) * 0.6
+          X_ai[:, 7] += 4
+          X_ai[:, 9] += 3
+          X_mixed = (X_human + X_ai) / 2
+
+          X = np.vstack([X_human, X_ai, X_mixed])
+          y = np.array([0]*n + [1]*n + [2]*n)
+
+          idx = np.random.permutation(len(X))
+          X, y = X[idx], y[idx]
+
+          clf = RandomForestClassifier(n_estimators=100, random_state=42)
+          clf.fit(X, y)
+
+          joblib.dump(clf, 'models/stylometry_model.joblib')
+
+          initial_type = [('float_input', FloatTensorType([None, 25]))]
+          onnx_model = convert_sklearn(clf, initial_types=initial_type, options={id(clf): {'zipmap': False}})
+          with open('models/stylometry_v1.onnx', 'wb') as f:
+              f.write(onnx_model.SerializeToString())
+
+          meta = {'feature_count': 25, 'classes': ['Human', 'AI', 'Mixed'], 'version': '1.0'}
+          with open('models/model_metadata.json', 'w') as f:
+              json.dump(meta, f)
+
+          print('Models created successfully')
+          print('Files:', os.listdir('models'))
+          "
 
       - name: Build exe
-        run: |
-          pyinstaller --onefile --windowed --name AIScan `
-            --add-data "models;models" `
-            --hidden-import sklearn.ensemble._forest `
-            --hidden-import onnxruntime `
-            --hidden-import watchdog.observers.winapi `
-            --hidden-import pystray._win32 `
-            --hidden-import win32gui --hidden-import win32clipboard `
-            --hidden-import plyer.platforms.win.notification `
-            --exclude-module matplotlib --exclude-module scipy --exclude-module pandas `
-            agent_standalone.py
+        run: pyinstaller --onefile --windowed --name AIScan --add-data "models;models" --hidden-import sklearn.ensemble._forest --hidden-import onnxruntime --hidden-import watchdog.observers.winapi --hidden-import pystray._win32 --hidden-import win32gui --hidden-import win32clipboard --hidden-import plyer.platforms.win.notification --exclude-module matplotlib --exclude-module scipy --exclude-module pandas agent_standalone.py
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -48,20 +87,56 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime joblib rumps plyer
+        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime joblib rumps plyer skl2onnx
+
+      - name: Train model and create models folder
+        run: |
+          python -c "
+          import os, json
+          from pathlib import Path
+          import numpy as np
+          from sklearn.ensemble import RandomForestClassifier
+          from skl2onnx import convert_sklearn
+          from skl2onnx.common.data_types import FloatTensorType
+          import joblib
+
+          Path('models').mkdir(exist_ok=True)
+
+          np.random.seed(42)
+          n = 400
+          X_human = np.random.randn(n, 25) * 0.8
+          X_human[:, 2] += 3
+          X_ai = np.random.randn(n, 25) * 0.6
+          X_ai[:, 7] += 4
+          X_ai[:, 9] += 3
+          X_mixed = (X_human + X_ai) / 2
+
+          X = np.vstack([X_human, X_ai, X_mixed])
+          y = np.array([0]*n + [1]*n + [2]*n)
+
+          idx = np.random.permutation(len(X))
+          X, y = X[idx], y[idx]
+
+          clf = RandomForestClassifier(n_estimators=100, random_state=42)
+          clf.fit(X, y)
+
+          joblib.dump(clf, 'models/stylometry_model.joblib')
+
+          initial_type = [('float_input', FloatTensorType([None, 25]))]
+          onnx_model = convert_sklearn(clf, initial_types=initial_type, options={id(clf): {'zipmap': False}})
+          with open('models/stylometry_v1.onnx', 'wb') as f:
+              f.write(onnx_model.SerializeToString())
+
+          meta = {'feature_count': 25, 'classes': ['Human', 'AI', 'Mixed'], 'version': '1.0'}
+          with open('models/model_metadata.json', 'w') as f:
+              json.dump(meta, f)
+
+          print('Models created successfully')
+          print('Files:', os.listdir('models'))
+          "
 
       - name: Build app
-        run: |
-          pyinstaller --onefile --windowed --name AIScan \
-            --add-data "models:models" \
-            --hidden-import sklearn.ensemble._forest \
-            --hidden-import onnxruntime \
-            --hidden-import watchdog.observers.fsevents \
-            --hidden-import rumps \
-            --hidden-import plyer.platforms.macosx.notification \
-            --exclude-module matplotlib --exclude-module scipy --exclude-module pandas \
-            --osx-bundle-identifier com.aiscan.agent \
-            agent_standalone.py
+        run: pyinstaller --onefile --windowed --name AIScan --add-data "models:models" --hidden-import sklearn.ensemble._forest --hidden-import onnxruntime --hidden-import watchdog.observers.fsevents --hidden-import rumps --hidden-import plyer.platforms.macosx.notification --exclude-module matplotlib --exclude-module scipy --exclude-module pandas --osx-bundle-identifier com.aiscan.agent agent_standalone.py
 
       - name: Make DMG
         run: |
