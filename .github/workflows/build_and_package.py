@@ -1,7 +1,6 @@
 import os, sys, subprocess, shutil
 from pathlib import Path
 
-# Clear any cached builds
 print("=== Clearing cache ===")
 for d in ["build", "dist"]:
     if Path(d).exists():
@@ -12,8 +11,7 @@ for f in Path(".").glob("*.spec"):
     print(f"  Deleted {f}")
 print("=== Cache cleared ===")
 
-# Run PyInstaller
-print("=== Building AIScan ===")
+print("=== Building AIScan v3 ===")
 is_windows = sys.platform == "win32"
 
 cmd = [
@@ -21,6 +19,7 @@ cmd = [
     "--onefile" if is_windows else "--onedir",
     "--windowed",
     "--name", "AIScan",
+    "--add-data", f"intelligence.py{';' if is_windows else ':'}.",
     "--hidden-import", "sklearn.ensemble._forest",
     "--hidden-import", "watchdog.observers.polling",
     "--hidden-import", "watchdog.observers.winapi" if is_windows else "watchdog.observers.fsevents",
