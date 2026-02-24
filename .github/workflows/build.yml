@@ -20,14 +20,11 @@ jobs:
         run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime joblib pystray plyer pywin32 skl2onnx
       - name: Build
         run: python build_and_package.py
-      - name: Package
-        shell: powershell
-        run: Compress-Archive -Path dist/AIScan -DestinationPath AIScan-Windows.zip
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: AIScan-Windows
-          path: AIScan-Windows.zip
+          path: dist/AIScan.exe
 
   macos-apple-silicon:
     runs-on: macos-latest
