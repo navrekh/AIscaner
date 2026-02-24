@@ -535,8 +535,160 @@ def run_tray(obs):
 # ENTRY POINT
 # ════════════════════════════════════════════════════════════════════════════
 
+
+# ════════════════════════════════════════════════════════════════════════════
+# LICENSE SYSTEM
+# ════════════════════════════════════════════════════════════════════════════
+
+import hmac, hashlib
+
+LICENSE_SECRET = "aiscan-2026-navrekh-secret-xK9mP2qR"
+LICENSE_FILE   = DATA_DIR / "license.json"
+TRIAL_DAYS     = 14
+RAZORPAY_URL   = "https://rzp.io/rzp/sdbqn0r"  
+
+def _lic_load():
+    if LICENSE_FILE.exists():
+        try: return json.loads(LICENSE_FILE.read_text())
+        except: pass
+    return {}
+
+def _lic_save(data):
+    LICENSE_FILE.write_text(json.dumps(data))
+
+def _make_key(email):
+    raw = f"AISCAN-{email.lower().strip()}"
+    sig = hmac.new(LICENSE_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()[:24].upper()
+    return "-".join(sig[i:i+4] for i in range(0, 24, 4))
+
+def get_license_status():
+    data = _lic_load()
+    if data.get("licensed"):
+        return {"status": "active", "email": data.get("email", "")}
+    if "trial_start" not in data:
+        data["trial_start"] = time.time()
+        _lic_save(data)
+    days_left = max(0, int(TRIAL_DAYS - (time.time() - data["trial_start"]) / 86400))
+    return {"status": "trial", "days_left": days_left} if days_left > 0 else {"status": "expired"}
+
+def activate_license(email, key):
+    email = email.strip().lower()
+    if not email or "@" not in email:
+        return False, "Please enter a valid email address."
+    if _make_key(email) == key.strip().upper():
+        data = _lic_load()
+        data.update({"licensed": True, "email": email, "activated_at": time.time()})
+        _lic_save(data)
+        return True, "License activated! Thank you."
+    return False, "Invalid key. Please check your email and key."
+
+def show_trial_banner(days_left):
+    """Show a small non-blocking trial reminder."""
+    try:
+        import tkinter as tk
+        root = tk.Tk(); root.withdraw()
+        from tkinter import messagebox
+        messagebox.showinfo("AIScan Trial",
+            f"You have {days_left} day{'s' if days_left != 1 else ''} left in your free trial.\n\n"
+            f"Upgrade at:\n{RAZORPAY_URL}")
+        root.destroy()
+    except: pass
+
+def show_expired_screen():
+    """Blocking upgrade screen shown when trial expires."""
+    import tkinter as tk
+    from tkinter import messagebox
+    import webbrowser
+
+    root = tk.Tk()
+    root.title("AIScan — Trial Expired")
+    root.configure(bg="#0d0d14")
+    root.geometry("460x420")
+    root.resizable(False, False)
+    root.attributes("-topmost", True)
+
+    # Center on screen
+    root.update_idletasks()
+    x = (root.winfo_screenwidth()  - 460) // 2
+    y = (root.winfo_screenheight() - 420) // 2
+    root.geometry(f"460x420+{x}+{y}")
+
+    tk.Frame(root, bg="#c8401a", height=4).pack(fill="x")
+
+    tk.Label(root, text="⏰  Trial Expired",
+             font=("Helvetica", 18, "bold"), fg="#ff6644", bg="#0d0d14"
+             ).pack(pady=(28, 4))
+    tk.Label(root, text="Your 14-day free trial has ended.",
+             font=("Helvetica", 11), fg="#888", bg="#0d0d14").pack()
+    tk.Label(root, text="Upgrade to keep using AIScan.",
+             font=("Helvetica", 11), fg="#888", bg="#0d0d14").pack(pady=(0, 20))
+
+    # Upgrade button
+    tk.Button(root, text="Upgrade Now  —  ₹499/month",
+              font=("Helvetica", 12, "bold"), fg="#000", bg="#00e5ff",
+              relief="flat", padx=20, pady=10, cursor="hand2",
+              command=lambda: webbrowser.open(RAZORPAY_URL)
+              ).pack(pady=(0, 20))
+
+    # License key entry
+    tk.Label(root, text="Already purchased? Enter your license key:",
+             font=("Helvetica", 10), fg="#666", bg="#0d0d14").pack()
+
+    email_var = tk.StringVar()
+    key_var   = tk.StringVar()
+    msg_var   = tk.StringVar()
+
+    ef = tk.Frame(root, bg="#0d0d14"); ef.pack(pady=(8,0))
+    tk.Label(ef, text="Email:", font=("Helvetica",10), fg="#888", bg="#0d0d14",
+             width=8, anchor="e").pack(side="left")
+    tk.Entry(ef, textvariable=email_var, font=("Courier",10),
+             bg="#1a1a28", fg="#e8e8f0", insertbackground="#fff",
+             relief="flat", width=28).pack(side="left", padx=4)
+
+    kf = tk.Frame(root, bg="#0d0d14"); kf.pack(pady=4)
+    tk.Label(kf, text="Key:", font=("Helvetica",10), fg="#888", bg="#0d0d14",
+             width=8, anchor="e").pack(side="left")
+    tk.Entry(kf, textvariable=key_var, font=("Courier",10),
+             bg="#1a1a28", fg="#e8e8f0", insertbackground="#fff",
+             relief="flat", width=28).pack(side="left", padx=4)
+
+    tk.Label(root, textvariable=msg_var, font=("Helvetica",9),
+             fg="#ff6644", bg="#0d0d14").pack(pady=4)
+
+    def try_activate():
+        ok, msg = activate_license(email_var.get(), key_var.get())
+        if ok:
+            msg_var.set("✓ " + msg)
+            root.after(1500, root.destroy)
+        else:
+            msg_var.set("✗ " + msg)
+
+    tk.Button(root, text="Activate License",
+              font=("Helvetica", 10, "bold"), fg="#000", bg="#44cc77",
+              relief="flat", padx=14, pady=6, cursor="hand2",
+              command=try_activate).pack(pady=(0, 16))
+
+    root.mainloop()
+
 def main():
     log.info(f"AIScan starting. Data: {DATA_DIR}")
+
+    # ── License check ─────────────────────────────────────────────────────
+    lic = get_license_status()
+    log.info(f"License status: {lic['status']}")
+
+    if lic["status"] == "expired":
+        log.info("Trial expired — showing upgrade screen")
+        show_expired_screen()
+        # Re-check after they may have activated
+        lic = get_license_status()
+        if lic["status"] != "active":
+            sys.exit(0)  # exit if still not activated
+
+    elif lic["status"] == "trial" and lic["days_left"] <= 3:
+        # Warn when 3 or fewer days left
+        threading.Thread(target=show_trial_banner,
+                         args=(lic["days_left"],), daemon=True).start()
 
     # Initialise history page
     if not HISTORY_HTML.exists():
