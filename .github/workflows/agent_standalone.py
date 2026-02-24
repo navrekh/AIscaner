@@ -429,7 +429,7 @@ class _Handler:
         if path.suffix.lower() not in SUPPORTED: return
         if path.name.startswith(("~$",".",".~")): return
         now = time.time()
-        if now - self._debounce.get(str(path), 0) < 2.0: return
+        if now - self._debounce.get(str(path), 0) < 1.0: return
         self._debounce[str(path)] = now
         threading.Thread(target=self._scan, args=(path,), daemon=True).start()
 
@@ -469,8 +469,17 @@ def _watch_paths():
     return paths
 
 def start_watcher(paths):
-    from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
+
+    # Use PollingObserver on Windows - actively checks every 2 seconds
+    # Much more reliable than default WinAPI observer especially with OneDrive
+    if IS_WIN:
+        from watchdog.observers.polling import PollingObserver
+        obs = PollingObserver(timeout=2)
+        log.info("Using PollingObserver for Windows")
+    else:
+        from watchdog.observers import Observer
+        obs = Observer()
 
     handler = _Handler()
 
@@ -478,7 +487,6 @@ def start_watcher(paths):
         def on_created(self, e): handler.dispatch(e)
         def on_modified(self, e): handler.dispatch(e)
 
-    obs = Observer()
     for p in paths:
         obs.schedule(WDHandler(), str(p), recursive=True)
         log.info(f"Watching: {p}")
