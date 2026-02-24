@@ -916,6 +916,158 @@ def _test_scan():
 # MAIN
 # ════════════════════════════════════════════════════════════════════════════
 
+
+# ════════════════════════════════════════════════════════════════════════════
+# CLIPBOARD MONITOR — Detects AI content the moment it's pasted
+# ════════════════════════════════════════════════════════════════════════════
+
+class ClipboardMonitor:
+    """
+    Watches the clipboard every 1.5 seconds.
+    When text is pasted that looks AI-generated, shows popup immediately.
+    Works on Windows and Mac.
+    """
+    def __init__(self):
+        self._last_hash = ""
+        self._last_alert_hash = ""
+        self._running = False
+        self._min_words = 30  # ignore short copies
+
+    def start(self):
+        self._running = True
+        threading.Thread(target=self._loop, daemon=True).start()
+        log.info("Clipboard monitor started")
+
+    def stop(self):
+        self._running = False
+
+    def _get_clipboard_text(self):
+        try:
+            if IS_WIN:
+                import ctypes
+                if not ctypes.windll.user32.OpenClipboard(0):
+                    return ""
+                try:
+                    CF_UNICODETEXT = 13
+                    handle = ctypes.windll.user32.GetClipboardData(CF_UNICODETEXT)
+                    if not handle:
+                        return ""
+                    ptr = ctypes.windll.kernel32.GlobalLock(handle)
+                    if not ptr:
+                        return ""
+                    text = ctypes.wstring_at(ptr)
+                    ctypes.windll.kernel32.GlobalUnlock(handle)
+                    return text
+                finally:
+                    ctypes.windll.user32.CloseClipboard()
+            elif IS_MAC:
+                import subprocess
+                result = subprocess.run(
+                    ["pbpaste"], capture_output=True, text=True, timeout=2)
+                return result.stdout
+        except Exception as e:
+            log.debug(f"Clipboard read error: {e}")
+        return ""
+
+    def _loop(self):
+        log.info("Clipboard monitoring active")
+        while self._running:
+            try:
+                text = self._get_clipboard_text()
+                if not text or len(text.split()) < self._min_words:
+                    time.sleep(1.5)
+                    continue
+
+                # Hash to detect changes
+                text_hash = hashlib.md5(text.encode()).hexdigest()
+                if text_hash == self._last_hash:
+                    time.sleep(1.5)
+                    continue
+
+                self._last_hash = text_hash
+
+                # Skip if already alerted for this content
+                if text_hash == self._last_alert_hash:
+                    time.sleep(1.5)
+                    continue
+
+                # Scan it
+                result = _detect(text)
+                log.info(f"CLIPBOARD SCAN: {result.ai_score:.0f}% [{result.risk_level}] {result.classification} | {result.llm_suspected}")
+
+                # Only alert for Medium+ risk
+                if result.ai_score >= 35:
+                    self._last_alert_hash = text_hash
+                    log.info(f"  AI content detected in clipboard — alerting user")
+                    _show_clipboard_popup(result, text)
+
+            except Exception as e:
+                log.debug(f"Clipboard monitor error: {e}")
+            time.sleep(1.5)
+
+
+def _show_clipboard_popup(result: ScanResult, text: str):
+    """Special popup for clipboard detection — shown immediately on paste."""
+    threading.Thread(target=_clipboard_popup, args=(result, text), daemon=True).start()
+
+
+def _clipboard_popup(result: ScanResult, text: str):
+    try:
+        score = result.ai_score
+        risk  = result.risk_level
+        color = "#ff4455" if risk == "High" else "#ffaa00" if risk == "Medium" else "#44cc77"
+        preview = text.strip()[:120].replace("\n", " ") + "..."
+
+        import tkinter as tk
+        root = tk.Tk()
+        root.title("AIScan — Clipboard")
+        root.configure(bg="#111827")
+        root.geometry("400x220")
+        root.resizable(False, False)
+        root.attributes("-topmost", True)
+
+        sw = root.winfo_screenwidth()
+        sh = root.winfo_screenheight()
+        root.geometry(f"400x220+{sw-420}+{sh-260}")
+
+        tk.Frame(root, bg=color, height=3).pack(fill="x")
+        main = tk.Frame(root, bg="#111827"); main.pack(fill="both", expand=True, padx=16, pady=12)
+
+        top = tk.Frame(main, bg="#111827"); top.pack(fill="x")
+        tk.Label(top, text="📋 AIScan — Clipboard Detected",
+                 font=("Helvetica",10,"bold"), fg="#00e5ff", bg="#111827").pack(side="left")
+        tk.Label(top, text=f"● {risk}", font=("Helvetica",9),
+                 fg=color, bg="#111827").pack(side="right")
+
+        tk.Label(main, text="AI content detected in your clipboard",
+                 font=("Helvetica",9), fg="#555", bg="#111827", anchor="w").pack(fill="x", pady=(2,8))
+
+        mid = tk.Frame(main, bg="#1a1a2e", padx=12, pady=10); mid.pack(fill="x")
+        tk.Label(mid, text=f"{score:.0f}%", font=("Helvetica",20,"bold"),
+                 fg=color, bg="#1a1a2e").pack(side="left")
+        right = tk.Frame(mid, bg="#1a1a2e"); right.pack(side="left", padx=(12,0))
+        tk.Label(right, text=result.classification, font=("Helvetica",10,"bold"),
+                 fg="#e8e8f0", bg="#1a1a2e").pack(anchor="w")
+        tk.Label(right, text=result.llm_suspected, font=("Helvetica",9),
+                 fg="#666", bg="#1a1a2e").pack(anchor="w")
+
+        tk.Label(main, text=preview, font=("Helvetica",8),
+                 fg="#444", bg="#111827", wraplength=360, justify="left").pack(fill="x", pady=(6,0))
+
+        bf = tk.Frame(main, bg="#111827"); bf.pack(fill="x", pady=(8,0))
+        tk.Button(bf, text="Dismiss", command=root.destroy,
+                  font=("Helvetica",9,"bold"), fg="#0d0d14", bg="#00e5ff",
+                  relief="flat", padx=12, pady=4, cursor="hand2").pack(side="left", padx=(0,8))
+        tk.Button(bf, text="View History",
+                  command=lambda: [webbrowser.open(HISTORY_HTML.as_uri()), root.destroy()],
+                  font=("Helvetica",9), fg="#888", bg="#1a1a28",
+                  relief="flat", padx=12, pady=4, cursor="hand2").pack(side="left")
+
+        root.after(12000, root.destroy)
+        root.mainloop()
+    except Exception as e:
+        log.debug(f"Clipboard popup failed: {e}")
+
 def main():
     log.info(f"AIScan v2.0 starting. Data: {DATA_DIR}")
 
@@ -947,6 +1099,10 @@ def main():
     paths = _watch_paths()
     obs = start_watcher(paths)
     log.info("Watching: " + ", ".join(str(p) for p in paths))
+
+    # Start clipboard monitor
+    clipboard = ClipboardMonitor()
+    clipboard.start()
 
     # Startup test
     threading.Thread(target=_test_scan, daemon=True).start()
