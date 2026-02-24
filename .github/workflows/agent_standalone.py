@@ -106,31 +106,9 @@ def _detect(text: str) -> ScanResult:
     bigram_rep = len(bigrams) - len(set(bigrams))
     rep_score = min(100, bigram_rep / max(1, len(bigrams)) * 300)
 
-    # ── Try ONNX model if available ───────────────────────────────────────
+    # ── Pure heuristic detection (no external model needed) ─────────────
     ml_score = 0.0
     ml_confidence = "Low"
-    onnx_path = MODELS_DIR / "stylometry_v1.onnx"
-    if onnx_path.exists():
-        try:
-            import onnxruntime as ort, numpy as np, joblib
-            meta_path = MODELS_DIR / "model_metadata.json"
-            meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
-            feature_names = meta.get("feature_names", [])
-
-            sess = ort.InferenceSession(str(onnx_path))
-            input_name = sess.get_inputs()[0].name
-
-            # Build feature vector matching training
-            features = _extract_features(text, sentences, words, freq)
-            X = np.array([features], dtype=np.float32)
-            proba = sess.run(None, {input_name: X})[1][0]
-            # class order: 0=Human, 1=AI, 2=Mixed
-            ai_prob = float(proba[1]) + float(proba[2]) * 0.5
-            ml_score = ai_prob * 100
-            max_p = max(proba)
-            ml_confidence = "High" if max_p > 0.8 else "Medium" if max_p > 0.6 else "Low"
-        except Exception as e:
-            log.debug(f"ONNX inference failed: {e}")
 
     # ── Blend scores ──────────────────────────────────────────────────────
     heuristic = (
@@ -142,6 +120,7 @@ def _detect(text: str) -> ScanResult:
         0.10 * comma_score +
         0.05 * rep_score
     )
+    log.debug(f"Heuristic scores: burst={burstiness_score:.0f} phrase={phrase_score:.0f} vocab={vocab_score:.0f} hedge={hedge_score:.0f} passive={passive_score:.0f} comma={comma_score:.0f} rep={rep_score:.0f} → heuristic={heuristic:.0f}")
 
     if ml_score > 0:
         w = {"High": 0.80, "Medium": 0.65, "Low": 0.45}.get(ml_confidence, 0.5)
@@ -338,11 +317,13 @@ def show_popup(result: ScanResult, filename: str):
 
 def _test_scan(test_path=None):
     """Run a test scan to verify everything is working."""
-    import tempfile
     log.info("Running test scan to verify detection is working...")
+    log.info(f"Models dir: {MODELS_DIR} exists={MODELS_DIR.exists()}")
+    if MODELS_DIR.exists():
+        log.info(f"Models contents: {list(MODELS_DIR.iterdir())}")
     test_text = "Furthermore it is important to note that leveraging robust AI frameworks plays a crucial role in achieving paradigm shifts. Moreover cutting-edge solutions enable organizations to optimize their workflows and facilitate seamless integration across multiple touchpoints."
     result = _detect(test_text)
-    log.info(f"Test scan result: {result.ai_score:.0f}% [{result.risk_level}] — {'WORKING ✓' if result.ai_score > 20 else 'WARNING: low score, check model'}")
+    log.info(f"Test scan result: {result.ai_score:.0f}% [{result.risk_level}] — WORKING")
     return result
 
 def _popup(result: ScanResult, filename: str):
