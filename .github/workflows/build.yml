@@ -20,11 +20,37 @@ jobs:
         run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime joblib pystray plyer pywin32 skl2onnx
       - name: Build
         run: python build_and_package.py
+      - name: Package
+        shell: powershell
+        run: Compress-Archive -Path dist/AIScan -DestinationPath AIScan-Windows.zip
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: AIScan-Windows
-          path: dist/AIScan.exe
+          path: AIScan-Windows.zip
+
+  macos-apple-silicon:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime-silicon joblib rumps plyer skl2onnx
+      - name: Build
+        run: python build_and_package.py
+      - name: Make DMG
+        run: |
+          mkdir /tmp/dmg
+          cp -r dist/AIScan.app /tmp/dmg/
+          ln -s /Applications /tmp/dmg/Applications
+          hdiutil create -volname AIScan -srcfolder /tmp/dmg -ov -format UDZO AIScan-Mac-AppleSilicon.dmg
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: AIScan-Mac-AppleSilicon
+          path: AIScan-Mac-AppleSilicon.dmg
 
   macos-intel:
     runs-on: macos-13
@@ -42,32 +68,9 @@ jobs:
           mkdir /tmp/dmg
           cp -r dist/AIScan.app /tmp/dmg/
           ln -s /Applications /tmp/dmg/Applications
-          hdiutil create -volname AIScan-Intel -srcfolder /tmp/dmg -ov -format UDZO AIScan-Intel.dmg
+          hdiutil create -volname AIScan -srcfolder /tmp/dmg -ov -format UDZO AIScan-Mac-Intel.dmg
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: AIScan-Mac-Intel
-          path: AIScan-Intel.dmg
-
-  macos-arm:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Install dependencies
-        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime-silicon joblib rumps plyer skl2onnx
-      - name: Build
-        run: python build_and_package.py
-      - name: Make DMG
-        run: |
-          mkdir /tmp/dmg
-          cp -r dist/AIScan.app /tmp/dmg/
-          ln -s /Applications /tmp/dmg/Applications
-          hdiutil create -volname AIScan-Apple -srcfolder /tmp/dmg -ov -format UDZO AIScan-Apple.dmg
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: AIScan-Mac-Apple-Silicon
-          path: AIScan-Apple.dmg
+          path: AIScan-Mac-Intel.dmg
