@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dependencies
-        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime joblib pystray plyer pywin32 skl2onnx
+        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib pystray plyer pywin32
       - name: Build
         run: python build_and_package.py
       - name: Upload
@@ -34,7 +34,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dependencies
-        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime-silicon joblib rumps plyer skl2onnx
+        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib rumps plyer
       - name: Build
         run: python build_and_package.py
       - name: Make DMG
@@ -57,7 +57,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dependencies
-        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn onnxruntime joblib rumps plyer skl2onnx
+        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib rumps plyer
       - name: Build
         run: python build_and_package.py
       - name: Make DMG
