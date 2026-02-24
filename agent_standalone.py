@@ -1,19 +1,16 @@
 """
-AIScan — AI Document Detection Agent
-Single-file standalone version. Bundles all detection logic.
-User installs once, runs forever. Zero configuration.
+AIScan v2.0 — AI Document Detection Agent
+Smarter detection, paragraph-level highlighting, right-click scan, history dashboard.
 """
-import sys, os, time, json, threading, logging, hashlib, re, math
+import sys, os, time, json, threading, logging, hashlib, re, math, webbrowser
 from pathlib import Path
 from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
 from dataclasses import dataclass, field
 
-# ── Platform detection ────────────────────────────────────────────────────
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
-# ── Data directory (auto-created) ─────────────────────────────────────────
 if IS_WIN:
     DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "AIScan"
 elif IS_MAC:
@@ -25,36 +22,62 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR = DATA_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-# ── Logging ───────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        RotatingFileHandler(LOG_DIR / "aiscan.log", maxBytes=5*1024*1024, backupCount=3),
-        logging.StreamHandler(sys.stdout),
+        RotatingFileHandler(LOG_DIR / "aiscan.log", maxBytes=2*1024*1024, backupCount=3),
+        logging.StreamHandler(sys.stdout)
     ])
 log = logging.getLogger("aiscan")
 
-# ── Find bundled model (works both frozen and unfrozen) ───────────────────
-if getattr(sys, "frozen", False):
-    _BASE = Path(sys._MEIPASS)
-else:
-    _BASE = Path(__file__).parent
-
-MODELS_DIR = _BASE / "models"
+HISTORY_FILE = DATA_DIR / "scan_log.jsonl"
+HISTORY_HTML = DATA_DIR / "scan_history.html"
 
 # ════════════════════════════════════════════════════════════════════════════
-# DETECTION ENGINE — 100% offline, no network calls
+# DETECTION ENGINE v2 — Smarter, per-paragraph, LLM fingerprinting
 # ════════════════════════════════════════════════════════════════════════════
 
-AI_PHRASES = [
-    "furthermore","moreover","additionally","in conclusion",
-    "it is important to note","it is worth noting","notably",
-    "in summary","to summarize","in essence","as a result",
-    "consequently","therefore","thus","this highlights",
-    "this demonstrates","cutting-edge","robust framework",
-    "paradigm shift","leverage","utilize","facilitate",
-    "in today's fast-paced","delve into","navigate",
+# Expanded AI phrase sets per LLM
+CHATGPT_PHRASES = [
+    "certainly!", "of course!", "great question", "i'd be happy to",
+    "as an ai", "as a language model", "i cannot provide",
+    "it's important to note", "it's worth noting",
+    "in today's world", "in today's fast-paced", "in conclusion",
+    "to summarize", "furthermore", "moreover", "additionally",
+    "this is a complex topic", "there are several", "various factors",
 ]
+
+CLAUDE_PHRASES = [
+    "i want to be direct", "to be clear", "let me think through",
+    "there are a few things", "it's worth considering",
+    "i should note", "nuanced", "straightforward",
+    "happy to help", "let me know if",
+]
+
+GEMINI_PHRASES = [
+    "leverage", "utilize", "facilitate", "paradigm shift",
+    "cutting-edge", "robust framework", "seamless integration",
+    "optimize", "innovative", "ecosystem", "synergy",
+    "delve into", "navigate", "unlock", "empower",
+    "transformative", "scalable", "actionable insights",
+]
+
+GENERIC_AI_PHRASES = [
+    "as a result", "consequently", "therefore", "thus",
+    "this highlights", "this demonstrates", "this underscores",
+    "it is important to", "one must consider", "plays a crucial role",
+    "across multiple", "multiple touchpoints", "best practices",
+    "key takeaways", "moving forward", "going forward",
+]
+
+ALL_AI_PHRASES = CHATGPT_PHRASES + CLAUDE_PHRASES + GEMINI_PHRASES + GENERIC_AI_PHRASES
+
+@dataclass
+class ParagraphResult:
+    text: str
+    ai_score: float
+    classification: str
+    reasons: list
 
 @dataclass
 class ScanResult:
@@ -63,162 +86,244 @@ class ScanResult:
     classification: str = "Human"
     llm_suspected: str = "None"
     confidence: str = "Low"
+    paragraph_results: list = field(default_factory=list)
+    reasons: list = field(default_factory=list)
 
-def _detect(text: str) -> ScanResult:
-    """Pure heuristic + ONNX detection. No network. No config."""
+
+def _score_text_block(text: str) -> tuple:
+    """Score a block of text. Returns (score, reasons, component_scores)."""
     text = text.strip()
+    if not text:
+        return 0.0, [], {}
+
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if len(s.split()) >= 3]
     words = text.lower().split()
+    n = max(1, len(words))
+    ns = max(1, len(sentences))
 
-    if len(sentences) < 2 or len(words) < 15:
+    reasons = []
+    scores = {}
+
+    # 1. Sentence length burstiness (AI = uniform, Human = varied)
+    if len(sentences) >= 2:
+        sl = [len(s.split()) for s in sentences]
+        mean_sl = sum(sl) / len(sl)
+        std_sl = math.sqrt(sum((l - mean_sl)**2 for l in sl) / len(sl))
+        cv = (std_sl / mean_sl) if mean_sl > 0 else 0
+        scores["burstiness"] = max(0, min(100, (0.5 - cv) * 200))
+        if scores["burstiness"] > 60:
+            reasons.append(f"Very uniform sentence lengths (AI pattern)")
+    else:
+        scores["burstiness"] = 30
+
+    # 2. Vocabulary entropy (AI = lower entropy / more predictable)
+    freq = Counter(words)
+    entropy = -sum((c/n)*math.log2(c/n) for c in freq.values() if c > 0)
+    scores["vocab"] = max(0, min(100, (11 - entropy) * 14))
+    if scores["vocab"] > 60:
+        reasons.append(f"Predictable vocabulary patterns")
+
+    # 3. AI phrase detection with per-LLM tracking
+    text_lower = text.lower()
+    chatgpt_hits = sum(1 for p in CHATGPT_PHRASES if p in text_lower)
+    claude_hits   = sum(1 for p in CLAUDE_PHRASES   if p in text_lower)
+    gemini_hits   = sum(1 for p in GEMINI_PHRASES   if p in text_lower)
+    generic_hits  = sum(1 for p in GENERIC_AI_PHRASES if p in text_lower)
+    total_hits = chatgpt_hits + claude_hits + gemini_hits + generic_hits
+    scores["phrases"] = min(100, total_hits * 15)
+    if total_hits > 0:
+        matched = [p for p in ALL_AI_PHRASES if p in text_lower][:3]
+        reasons.append(f"AI phrases detected: {', '.join(matched)}")
+
+    # 4. Hedging language
+    hedging = len(re.findall(
+        r'\b(may|might|could|would|perhaps|possibly|likely|suggests?|'
+        r'indicates?|appears?|seems?|arguably|presumably)\b', text_lower))
+    scores["hedging"] = min(100, hedging / n * 600)
+    if scores["hedging"] > 50:
+        reasons.append(f"High hedging language ({hedging} instances)")
+
+    # 5. Passive voice density
+    passive = len(re.findall(r'\b(is|are|was|were|be|been|being)\s+\w+ed\b', text_lower))
+    scores["passive"] = min(100, passive / ns * 35)
+    if scores["passive"] > 50:
+        reasons.append(f"High passive voice usage")
+
+    # 6. Comma density
+    commas = text.count(",")
+    scores["comma"] = min(100, commas / ns * 22)
+
+    # 7. Bigram repetition
+    bigrams = [f"{words[i]} {words[i+1]}" for i in range(len(words)-1)]
+    rep = len(bigrams) - len(set(bigrams))
+    scores["repetition"] = min(100, rep / max(1, len(bigrams)) * 250)
+    if scores["repetition"] > 40:
+        reasons.append(f"Repeated phrase patterns")
+
+    # 8. Perfect structure detection (AI loves numbered lists, perfect headers)
+    numbered = len(re.findall(r'^\s*\d+[\.\)]\s', text, re.MULTILINE))
+    bullet = len(re.findall(r'^\s*[-•*]\s', text, re.MULTILINE))
+    scores["structure"] = min(100, (numbered + bullet) / ns * 60)
+    if scores["structure"] > 40:
+        reasons.append(f"Highly structured formatting (AI pattern)")
+
+    # 9. Transition word density
+    transitions = len(re.findall(
+        r'\b(however|nevertheless|nonetheless|consequently|subsequently|'
+        r'furthermore|moreover|additionally|alternatively|conversely)\b', text_lower))
+    scores["transitions"] = min(100, transitions / ns * 80)
+    if scores["transitions"] > 50:
+        reasons.append(f"Heavy use of transition words")
+
+    # 10. Question marks (humans ask more questions)
+    questions = text.count("?")
+    scores["questions"] = max(0, min(30, 30 - questions * 15))
+
+    # Weighted blend
+    final = (
+        0.20 * scores["burstiness"] +
+        0.15 * scores["phrases"] +
+        0.12 * scores["vocab"] +
+        0.12 * scores["hedging"] +
+        0.10 * scores["passive"] +
+        0.10 * scores["transitions"] +
+        0.08 * scores["structure"] +
+        0.07 * scores["comma"] +
+        0.04 * scores["repetition"] +
+        0.02 * scores["questions"]
+    )
+
+    return (
+        round(min(100, max(0, final)), 1),
+        reasons,
+        {**scores,
+         "chatgpt_hits": chatgpt_hits,
+         "claude_hits": claude_hits,
+         "gemini_hits": gemini_hits}
+    )
+
+
+def _detect(text: str) -> ScanResult:
+    """Full document detection with paragraph-level analysis."""
+    text = text.strip()
+    if not text:
         return ScanResult()
 
-    # ── Stylometry features ───────────────────────────────────────────────
-    sl = [len(s.split()) for s in sentences]
-    mean_sl = sum(sl) / len(sl)
-    std_sl = math.sqrt(sum((l - mean_sl)**2 for l in sl) / len(sl))
-    burstiness = (std_sl / mean_sl * 100) if mean_sl > 0 else 50
-    burstiness_score = max(0, 100 - burstiness * 1.5)   # low burstiness = AI
+    # Split into paragraphs
+    paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if len(p.strip().split()) >= 10]
+    if not paragraphs:
+        paragraphs = [text]
 
-    freq = Counter(words)
-    n = len(words)
-    entropy = -sum((c/n)*math.log2(c/n) for c in freq.values() if c > 0)
-    vocab_score = max(0, min(100, (12 - entropy) * 12))  # low entropy = AI
+    # Score each paragraph
+    para_results = []
+    all_scores = []
+    all_reasons = []
+    all_components = []
 
-    text_lower = text.lower()
-    hits = sum(1 for p in AI_PHRASES if p in text_lower)
-    phrase_score = min(100, hits * 18)
+    for para in paragraphs:
+        score, reasons, components = _score_text_block(para)
+        all_scores.append(score)
+        all_reasons.extend(reasons)
+        all_components.append(components)
 
-    # Hedging words
-    hedging = len(re.findall(r'\b(may|might|could|would|perhaps|possibly|likely|suggests?|indicates?|appears?|seems?)\b', text_lower))
-    hedge_score = min(100, hedging / max(1, n) * 800)
+        if score < 30:    cls = "Human"
+        elif score < 55:  cls = "AI-assisted"
+        elif score < 75:  cls = "Mixed"
+        else:             cls = "AI-generated"
 
-    # Passive voice
-    passive = len(re.findall(r'\b(is|are|was|were|be|been|being)\s+\w+ed\b', text_lower))
-    passive_score = min(100, passive / max(1, len(sentences)) * 40)
+        para_results.append(ParagraphResult(
+            text=para[:200] + "..." if len(para) > 200 else para,
+            ai_score=score,
+            classification=cls,
+            reasons=reasons
+        ))
 
-    # Comma density (AI writes long complex sentences)
-    commas = text.count(",")
-    comma_score = min(100, commas / max(1, len(sentences)) * 25)
-
-    # Repetition (AI reuses phrases)
-    bigrams = [f"{words[i]} {words[i+1]}" for i in range(len(words)-1)]
-    bigram_rep = len(bigrams) - len(set(bigrams))
-    rep_score = min(100, bigram_rep / max(1, len(bigrams)) * 300)
-
-    # ── Pure heuristic detection (no external model needed) ─────────────
-    ml_score = 0.0
-    ml_confidence = "Low"
-
-    # ── Blend scores ──────────────────────────────────────────────────────
-    heuristic = (
-        0.25 * burstiness_score +
-        0.20 * phrase_score +
-        0.15 * vocab_score +
-        0.15 * hedge_score +
-        0.10 * passive_score +
-        0.10 * comma_score +
-        0.05 * rep_score
-    )
-    log.debug(f"Heuristic scores: burst={burstiness_score:.0f} phrase={phrase_score:.0f} vocab={vocab_score:.0f} hedge={hedge_score:.0f} passive={passive_score:.0f} comma={comma_score:.0f} rep={rep_score:.0f} → heuristic={heuristic:.0f}")
-
-    if ml_score > 0:
-        w = {"High": 0.80, "Medium": 0.65, "Low": 0.45}.get(ml_confidence, 0.5)
-        final = w * ml_score + (1 - w) * heuristic
+    # Document-level score = weighted average (higher paragraphs weighted more)
+    if all_scores:
+        sorted_scores = sorted(all_scores, reverse=True)
+        # Weight top paragraphs more heavily
+        weights = [1.0 / (i + 1) for i in range(len(sorted_scores))]
+        total_w = sum(weights)
+        final = sum(s * w for s, w in zip(sorted_scores, weights)) / total_w
     else:
-        final = heuristic
+        final = 0.0
 
     final = round(min(100, max(0, final)), 1)
 
-    # ── Classify ──────────────────────────────────────────────────────────
+    # Deduplicate reasons
+    seen = set()
+    unique_reasons = []
+    for r in all_reasons:
+        key = r[:40]
+        if key not in seen:
+            seen.add(key)
+            unique_reasons.append(r)
+
+    # LLM fingerprinting
+    total_chatgpt = sum(c.get("chatgpt_hits", 0) for c in all_components)
+    total_claude  = sum(c.get("claude_hits",   0) for c in all_components)
+    total_gemini  = sum(c.get("gemini_hits",   0) for c in all_components)
+
+    if final >= 35:
+        llm_votes = {
+            "Likely ChatGPT": total_chatgpt,
+            "Likely Claude":  total_claude,
+            "Likely Gemini":  total_gemini,
+        }
+        top_llm = max(llm_votes, key=llm_votes.get)
+        llm = top_llm if max(llm_votes.values()) > 0 else "Unknown LLM"
+    else:
+        llm = "None"
+
+    # Classification
     if final < 25:   classification = "Human";        risk = "Low"
-    elif final < 50: classification = "AI-assisted";   risk = "Low" if final < 35 else "Medium"
-    elif final < 75: classification = "Mixed";          risk = "Medium"
+    elif final < 40: classification = "AI-assisted";  risk = "Low"
+    elif final < 60: classification = "AI-assisted";  risk = "Medium"
+    elif final < 78: classification = "Mixed";         risk = "Medium"
     else:            classification = "AI-generated";  risk = "High"
 
     conf = "High" if final < 20 or final > 80 else "Medium" if final < 35 or final > 65 else "Low"
 
-    # ── LLM suspicion ─────────────────────────────────────────────────────
-    if final >= 40:
-        if burstiness < 15 and hedge_score > 30:   llm = "Likely ChatGPT"
-        elif phrase_score > 50 and comma_score > 40: llm = "Likely Claude"
-        elif vocab_score > 50:                        llm = "Likely Gemini"
-        else:                                          llm = "Unknown LLM"
-    else:
-        llm = "None"
-
-    return ScanResult(ai_score=final, risk_level=risk,
-                      classification=classification, llm_suspected=llm, confidence=conf)
-
-
-def _extract_features(text, sentences, words, freq):
-    """Extract the same 25 features used in training."""
-    n = max(1, len(words))
-    ns = max(1, len(sentences))
-    sl = [len(s.split()) for s in sentences]
-    mean_sl = sum(sl)/ns
-    std_sl = math.sqrt(sum((l-mean_sl)**2 for l in sl)/ns)
-
-    entropy = -sum((c/n)*math.log2(c/n) for c in freq.values() if c > 0)
-    text_lower = text.lower()
-    trans = sum(1 for p in AI_PHRASES[:12] if p in text_lower)
-    hedge = len(re.findall(r'\b(may|might|could|would|perhaps|possibly|likely|suggests?|indicates?)\b', text_lower))
-    passive = len(re.findall(r'\b(is|are|was|were|be|been|being)\s+\w+ed\b', text_lower))
-    commas = text.count(",")
-    colons = text.count(":")
-    dashes = text.count("—") + text.count(" - ")
-    bigrams = [f"{words[i]} {words[i+1]}" for i in range(len(words)-1)]
-    bigram_rep = (len(bigrams)-len(set(bigrams)))/max(1,len(bigrams))
-    trigrams = [f"{words[i]} {words[i+1]} {words[i+2]}" for i in range(len(words)-2)]
-    trigram_rep = (len(trigrams)-len(set(trigrams)))/max(1,len(trigrams)) if trigrams else 0
-    starters = Counter(s.split()[0].lower() if s.split() else "" for s in sentences)
-    st_entropy = -sum((c/ns)*math.log2(c/ns) for c in starters.values() if c > 0)
-    paras = [p for p in text.split("\n\n") if p.strip()]
-    pl = [len(p.split()) for p in paras] if len(paras) > 1 else [n]
-    pm = sum(pl)/len(pl); pl_cv = math.sqrt(sum((l-pm)**2 for l in pl)/len(pl))/max(1,pm)
-    wl = [len(w) for w in words]
-    avg_wl = sum(wl)/n
-    word_entropy = -sum((c/n)*math.log2(c/n) for c in freq.values() if c > 0)
-    vocab_rich = len(freq)/n
-
-    filler_phrases = ["it is important","it is worth","as a result","in conclusion",
-                      "furthermore","moreover","additionally","in summary"]
-    filler_count = sum(text_lower.count(p) for p in filler_phrases)
-    filler_density = filler_count / max(1, ns)
-
-    return [
-        mean_sl, std_sl, max(0,100-std_sl/max(1,mean_sl)*100)/100,
-        ns, vocab_rich, 1-vocab_rich,
-        avg_wl, trans/ns, hedge/n*100, filler_density,
-        passive/ns, commas/ns, colons/n*10, dashes/n*10,
-        bigram_rep, trigram_rep, st_entropy, pl_cv,
-        word_entropy, entropy,
-        min(1, filler_count/10), min(1, hedge/10), min(1, trans/10),
-        min(1, passive/5), filler_count,
-    ]
+    return ScanResult(
+        ai_score=final,
+        risk_level=risk,
+        classification=classification,
+        llm_suspected=llm,
+        confidence=conf,
+        paragraph_results=para_results,
+        reasons=unique_reasons[:5]
+    )
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# CONTENT EXTRACTOR
+# CONTENT EXTRACTION
 # ════════════════════════════════════════════════════════════════════════════
+
+SUPPORTED = {".docx", ".xlsx", ".pptx", ".pdf", ".txt", ".md", ".csv"}
 
 def extract_text(path: Path) -> str:
-    """Extract text from any supported file type."""
-    ext = path.suffix.lower()
     try:
+        ext = path.suffix.lower()
         if ext == ".txt" or ext == ".md" or ext == ".csv":
-            return path.read_text(encoding="utf-8", errors="ignore")
+            for enc in ["utf-8", "latin-1", "cp1252"]:
+                try:
+                    return path.read_text(encoding=enc)
+                except: pass
         elif ext == ".docx":
             from docx import Document
             doc = Document(str(path))
-            return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            return "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        elif ext == ".pdf":
+            from pypdf import PdfReader
+            reader = PdfReader(str(path))
+            return "\n\n".join(p.extract_text() or "" for p in reader.pages)
         elif ext == ".xlsx":
-            import openpyxl
-            wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+            from openpyxl import load_workbook
+            wb = load_workbook(str(path), read_only=True, data_only=True)
             parts = []
             for ws in wb.worksheets:
                 for row in ws.iter_rows(values_only=True):
-                    parts.extend(str(c) for c in row if c and str(c).strip())
+                    parts.extend(str(c) for c in row if c)
             return " ".join(parts)
         elif ext == ".pptx":
             from pptx import Presentation
@@ -226,166 +331,198 @@ def extract_text(path: Path) -> str:
             parts = []
             for slide in prs.slides:
                 for shape in slide.shapes:
-                    if hasattr(shape, "text"): parts.append(shape.text)
-            return "\n".join(parts)
-        elif ext == ".pdf":
-            try:
-                import pypdf
-                reader = pypdf.PdfReader(str(path))
-                return "\n".join(p.extract_text() or "" for p in reader.pages)
-            except Exception:
-                return ""
+                    if hasattr(shape, "text"):
+                        parts.append(shape.text)
+            return "\n\n".join(parts)
     except Exception as e:
-        log.debug(f"Extract failed {path.name}: {e}")
+        log.error(f"Extract error {path.name}: {e}")
     return ""
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# HISTORY — local HTML viewer
+# HISTORY STORAGE & HTML DASHBOARD
 # ════════════════════════════════════════════════════════════════════════════
 
-HISTORY_FILE = DATA_DIR / "scan_log.jsonl"
-HISTORY_HTML  = DATA_DIR / "scan_history.html"
+MAX_HISTORY = 500
 
 def save_result(path: Path, result: ScanResult):
     entry = {
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "file": path.name,
+        "file": str(path),
+        "name": path.name,
         "score": result.ai_score,
         "risk": result.risk_level,
-        "class": result.classification,
+        "classification": result.classification,
         "llm": result.llm_suspected,
+        "confidence": result.confidence,
+        "reasons": result.reasons,
+        "paragraphs": [
+            {"score": p.ai_score, "classification": p.classification,
+             "text": p.text[:150], "reasons": p.reasons}
+            for p in result.paragraph_results
+        ]
     }
-    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
+    lines = []
+    if HISTORY_FILE.exists():
+        lines = HISTORY_FILE.read_text().splitlines()
+    lines.append(json.dumps(entry))
+    if len(lines) > MAX_HISTORY:
+        lines = lines[-MAX_HISTORY:]
+    HISTORY_FILE.write_text("\n".join(lines))
     _rebuild_html()
 
-def _rebuild_html():
-    events = []
-    if HISTORY_FILE.exists():
-        for line in HISTORY_FILE.read_text(encoding="utf-8").strip().splitlines()[-500:]:
-            try: events.append(json.loads(line))
-            except: pass
-    events.reverse()
-    risk_color = {"High":"#ff4455","Medium":"#ffaa00","Low":"#44cc77"}
-    rows = "".join(
-        f'<tr><td class="ts">{e["ts"]}</td>'
-        f'<td class="fn">{e["file"]}</td>'
-        f'<td style="color:{risk_color.get(e["risk"],"#aaa")};font-weight:700">{e["risk"]}</td>'
-        f'<td style="color:{risk_color.get(e["risk"],"#aaa")};font-size:1.2em;font-weight:900">{e["score"]:.0f}%</td>'
-        f'<td>{e["class"]}</td>'
-        f'<td class="llm">{e["llm"]}</td></tr>'
-        for e in events
-    ) or '<tr><td colspan="6" class="empty">No scans yet — save a document to get started</td></tr>'
 
-    HISTORY_HTML.write_text(f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><title>AIScan History</title>
-<meta http-equiv="refresh" content="10">
+def _rebuild_html():
+    entries = []
+    if HISTORY_FILE.exists():
+        for line in HISTORY_FILE.read_text().splitlines():
+            try:
+                entries.append(json.loads(line))
+            except: pass
+    entries.reverse()
+
+    # Stats
+    total = len(entries)
+    high_risk = sum(1 for e in entries if e.get("risk") == "High")
+    medium_risk = sum(1 for e in entries if e.get("risk") == "Medium")
+    avg_score = sum(e.get("score", 0) for e in entries) / max(1, total)
+
+    rows = ""
+    for e in entries[:100]:
+        score = e.get("score", 0)
+        risk = e.get("risk", "Low")
+        color = "#ff4455" if risk == "High" else "#ffaa00" if risk == "Medium" else "#44cc77"
+        reasons_html = ""
+        if e.get("reasons"):
+            reasons_html = "<br><small style='color:#666'>" + " · ".join(e["reasons"][:3]) + "</small>"
+
+        # Paragraph breakdown
+        para_html = ""
+        for p in e.get("paragraphs", [])[:3]:
+            p_color = "#ff4455" if p["score"] > 75 else "#ffaa00" if p["score"] > 40 else "#44cc77"
+            para_html += f"""
+            <div style='margin:4px 0;padding:6px 10px;background:#111;border-left:3px solid {p_color};border-radius:0 4px 4px 0;font-size:11px;color:#aaa'>
+                <span style='color:{p_color};font-weight:700'>{p["score"]:.0f}%</span>
+                <span style='color:#666;margin:0 6px'>·</span>
+                {p["text"][:100]}...
+            </div>"""
+
+        rows += f"""
+        <div class='card' onclick='this.querySelector(".details").style.display=this.querySelector(".details").style.display==="none"?"block":"none"'>
+            <div style='display:flex;align-items:center;gap:12px'>
+                <div style='font-size:1.4em;font-weight:800;color:{color};min-width:52px'>{score:.0f}%</div>
+                <div style='flex:1'>
+                    <div style='font-weight:600;color:#e8e8f0'>{e.get("name","")}</div>
+                    <div style='font-size:11px;color:#555'>{e.get("ts","")} &nbsp;·&nbsp;
+                        <span style='color:{color}'>{risk} Risk</span> &nbsp;·&nbsp;
+                        {e.get("classification","")} &nbsp;·&nbsp;
+                        <span style='color:#888'>{e.get("llm","")}</span>
+                    </div>
+                    {reasons_html}
+                </div>
+                <div style='color:#444;font-size:18px'>▾</div>
+            </div>
+            <div class='details' style='display:none;margin-top:12px;padding-top:12px;border-top:1px solid #1a1a2e'>
+                <div style='font-size:11px;color:#555;margin-bottom:6px'>PARAGRAPH BREAKDOWN</div>
+                {para_html if para_html else "<div style='color:#444;font-size:11px'>No paragraph data</div>"}
+            </div>
+        </div>"""
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"/>
+<meta http-equiv="refresh" content="10"/>
+<title>AIScan History</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
 <style>
-*{{box-sizing:border-box;margin:0;padding:0}}
-body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-     background:#0d0d14;color:#e8e8f0;padding:32px 40px}}
-h1{{color:#00e5ff;font-size:1.5em;margin-bottom:4px}}
-.sub{{color:#555;font-size:0.82em;margin-bottom:28px}}
-table{{width:100%;border-collapse:collapse;font-size:0.875em}}
-th{{background:#141420;color:#666;font-weight:600;text-transform:uppercase;
-    letter-spacing:1px;font-size:0.72em;padding:10px 14px;text-align:left}}
-td{{padding:11px 14px;border-bottom:1px solid #1a1a28}}
-tr:hover td{{background:#141420}}
-.ts{{color:#444;font-size:0.85em}}.fn{{font-weight:600}}
-.llm{{color:#555;font-size:0.9em}}
-.empty{{text-align:center;padding:60px;color:#333}}
-.count{{color:#555;font-size:0.82em;margin-top:16px}}
-</style></head>
-<body>
-<h1>🤖 AIScan — Scan History</h1>
-<p class="sub">Auto-refreshes every 10s · All processing is local · Nothing sent to internet</p>
-<table>
-<thead><tr><th>Time</th><th>File</th><th>Risk</th><th>AI Score</th><th>Classification</th><th>Suspected LLM</th></tr></thead>
-<tbody>{rows}</tbody></table>
-<p class="count">{len(events)} total scans · Stored at {DATA_DIR}</p>
-</body></html>""", encoding="utf-8")
+* {{ box-sizing:border-box; margin:0; padding:0 }}
+body {{ background:#0d0d14; color:#e8e8f0; font-family:'DM Sans',sans-serif; font-size:13px }}
+.header {{ background:#0a0a10; border-bottom:1px solid #1a1a2e; padding:20px 32px; display:flex; align-items:center; gap:16px }}
+.header h1 {{ font-size:1.3em; font-weight:700 }} .header h1 span {{ color:#00e5ff }}
+.stats {{ display:flex; gap:16px; padding:20px 32px }}
+.stat {{ background:#111; border:1px solid #1a1a2e; border-radius:8px; padding:14px 20px; flex:1; text-align:center }}
+.stat .n {{ font-size:1.8em; font-weight:800; color:#00e5ff }}
+.stat .l {{ font-size:11px; color:#555; margin-top:2px }}
+.feed {{ padding:0 32px 32px }}
+.card {{ background:#111; border:1px solid #1a1a2e; border-radius:8px; padding:14px 16px;
+         margin-bottom:8px; cursor:pointer; transition:border-color .15s }}
+.card:hover {{ border-color:#333 }}
+.empty {{ text-align:center; color:#333; padding:60px; font-size:1.1em }}
+</style></head><body>
+<div class="header">
+    <div style="width:32px;height:32px;background:#00e5ff;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:16px">👁</div>
+    <h1><span>AI</span>Scan — Detection History</h1>
+    <div style="margin-left:auto;font-size:11px;color:#333">Auto-refreshes every 10s</div>
+</div>
+<div class="stats">
+    <div class="stat"><div class="n">{total}</div><div class="l">Total Scans</div></div>
+    <div class="stat"><div class="n" style="color:#ff4455">{high_risk}</div><div class="l">High Risk</div></div>
+    <div class="stat"><div class="n" style="color:#ffaa00">{medium_risk}</div><div class="l">Medium Risk</div></div>
+    <div class="stat"><div class="n">{avg_score:.0f}%</div><div class="l">Avg AI Score</div></div>
+</div>
+<div class="feed">
+    {"".join(rows) if rows else '<div class="empty">No scans yet. Save a document to get started.</div>'}
+</div>
+</body></html>"""
+
+    HISTORY_HTML.write_text(html, encoding="utf-8")
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# POPUP NOTIFICATIONS
+# NOTIFICATIONS
 # ════════════════════════════════════════════════════════════════════════════
 
 def show_popup(result: ScanResult, filename: str):
-    """Show native popup. Non-blocking."""
     threading.Thread(target=_popup, args=(result, filename), daemon=True).start()
 
-def _test_scan(test_path=None):
-    """Run a test scan to verify everything is working."""
-    log.info("Running test scan to verify detection is working...")
-    log.info(f"Models dir: {MODELS_DIR} exists={MODELS_DIR.exists()}")
-    if MODELS_DIR.exists():
-        log.info(f"Models contents: {list(MODELS_DIR.iterdir())}")
-    test_text = "Furthermore it is important to note that leveraging robust AI frameworks plays a crucial role in achieving paradigm shifts. Moreover cutting-edge solutions enable organizations to optimize their workflows and facilitate seamless integration across multiple touchpoints."
-    result = _detect(test_text)
-    log.info(f"Test scan result: {result.ai_score:.0f}% [{result.risk_level}] — WORKING")
-    return result
-
 def _popup(result: ScanResult, filename: str):
-    score = result.ai_score
-    risk  = result.risk_level
-    color = {"High":"#ff4455","Medium":"#ffaa00","Low":"#44cc77"}.get(risk,"#aaa")
-
-    # Try system notification first (least intrusive)
-    if IS_MAC:
-        try:
-            import subprocess
-            msg = f"AI Score: {score:.0f}% — {result.classification}"
-            subprocess.run(["osascript","-e",
-                f'display notification "{msg}" with title "AIScan" subtitle "{filename}"'],
-                timeout=3, capture_output=True)
-            return
-        except Exception: pass
-
-    # Tkinter window (works on both platforms)
     try:
+        score = result.ai_score
+        risk  = result.risk_level
+        color = "#ff4455" if risk == "High" else "#ffaa00" if risk == "Medium" else "#44cc77"
+        reason_text = result.reasons[0] if result.reasons else ""
+
         import tkinter as tk
         root = tk.Tk()
         root.title("AIScan")
-        root.configure(bg="#0d0d14")
+        root.configure(bg="#111827")
+        root.geometry("380x180")
         root.resizable(False, False)
         root.attributes("-topmost", True)
 
-        W, H = 400, 220
-        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        root.geometry(f"{W}x{H}+{sw-W-20}+{sh-H-60}")
+        sw = root.winfo_screenwidth()
+        sh = root.winfo_screenheight()
+        root.geometry(f"380x180+{sw-400}+{sh-220}")
 
         tk.Frame(root, bg=color, height=3).pack(fill="x")
+        main = tk.Frame(root, bg="#111827"); main.pack(fill="both", expand=True, padx=16, pady=12)
 
-        tf = tk.Frame(root, bg="#0d0d14", pady=10)
-        tf.pack(fill="x", padx=16)
-        tk.Label(tf, text="🤖  AIScan", font=("Helvetica",12,"bold"),
-                 fg="#00e5ff", bg="#0d0d14").pack(side="left")
-        tk.Label(tf, text=f"● {risk}", font=("Helvetica",10),
-                 fg=color, bg="#0d0d14").pack(side="right")
+        top = tk.Frame(main, bg="#111827"); top.pack(fill="x")
+        tk.Label(top, text="👁 AIScan", font=("Helvetica",10,"bold"),
+                 fg="#00e5ff", bg="#111827").pack(side="left")
+        tk.Label(top, text=f"● {risk} Risk", font=("Helvetica",9),
+                 fg=color, bg="#111827").pack(side="right")
 
-        tk.Label(root, text=f"📄  {filename}", font=("Helvetica",9),
-                 fg="#555", bg="#0d0d14", anchor="w", padx=16).pack(fill="x")
+        tk.Label(main, text=filename[:45], font=("Helvetica",9),
+                 fg="#555", bg="#111827", anchor="w").pack(fill="x", pady=(2,8))
 
-        cf = tk.Frame(root, bg="#141420", padx=12, pady=10,
-                      highlightbackground=color, highlightthickness=1)
-        cf.pack(fill="x", padx=14, pady=8)
-        tk.Label(cf, text=f"{score:.0f}%", font=("Courier",30,"bold"),
-                 fg=color, bg="#141420").pack(side="left")
-        df = tk.Frame(cf, bg="#141420", padx=10)
-        df.pack(side="left")
-        tk.Label(df, text=result.classification, font=("Helvetica",11,"bold"),
-                 fg="#e8e8f0", bg="#141420").pack(anchor="w")
-        tk.Label(df, text=f"Suspected: {result.llm_suspected}",
-                 font=("Courier",9), fg="#555", bg="#141420").pack(anchor="w")
+        mid = tk.Frame(main, bg="#1a1a2e", padx=12, pady=10); mid.pack(fill="x")
+        tk.Label(mid, text=f"{score:.0f}%", font=("Helvetica",20,"bold"),
+                 fg=color, bg="#1a1a2e").pack(side="left")
+        right = tk.Frame(mid, bg="#1a1a2e"); right.pack(side="left", padx=(12,0))
+        tk.Label(right, text=result.classification, font=("Helvetica",10,"bold"),
+                 fg="#e8e8f0", bg="#1a1a2e").pack(anchor="w")
+        tk.Label(right, text=result.llm_suspected, font=("Helvetica",9),
+                 fg="#666", bg="#1a1a2e").pack(anchor="w")
+        if reason_text:
+            tk.Label(right, text=reason_text[:40], font=("Helvetica",8),
+                     fg="#555", bg="#1a1a2e").pack(anchor="w")
 
-        bf = tk.Frame(root, bg="#0d0d14", pady=6)
-        bf.pack(fill="x", padx=14)
+        bf = tk.Frame(main, bg="#111827"); bf.pack(fill="x", pady=(10,0))
         tk.Button(bf, text="Dismiss", command=root.destroy,
                   font=("Helvetica",9,"bold"), fg="#0d0d14", bg="#00e5ff",
                   relief="flat", padx=12, pady=4, cursor="hand2").pack(side="left", padx=(0,8))
         tk.Button(bf, text="View History",
-                  command=lambda: [__import__("webbrowser").open(HISTORY_HTML.as_uri()), root.destroy()],
+                  command=lambda: [webbrowser.open(HISTORY_HTML.as_uri()), root.destroy()],
                   font=("Helvetica",9), fg="#888", bg="#1a1a28",
                   relief="flat", padx=12, pady=4, cursor="hand2").pack(side="left")
 
@@ -399,8 +536,6 @@ def _popup(result: ScanResult, filename: str):
 # FILE WATCHER
 # ════════════════════════════════════════════════════════════════════════════
 
-SUPPORTED = {".docx", ".xlsx", ".pptx", ".pdf", ".txt", ".md"}
-
 class _Handler:
     def __init__(self): self._debounce = {}
     def dispatch(self, event):
@@ -408,7 +543,7 @@ class _Handler:
         if not hasattr(event, "src_path"): return
         path = Path(event.src_path)
         if path.suffix.lower() not in SUPPORTED: return
-        if path.name.startswith(("~$",".",".~")): return
+        if path.name.startswith(("~$", ".", ".~")): return
         now = time.time()
         if now - self._debounce.get(str(path), 0) < 1.0: return
         self._debounce[str(path)] = now
@@ -417,6 +552,7 @@ class _Handler:
     def _scan(self, path: Path):
         try:
             log.info(f"Starting scan: {path.name}")
+            time.sleep(0.5)  # wait for file write to complete
             text = extract_text(path)
             if not text:
                 log.info(f"No text extracted from {path.name}")
@@ -424,15 +560,17 @@ class _Handler:
             word_count = len(text.split())
             log.info(f"Extracted {word_count} words from {path.name}")
             if word_count < 15:
-                log.info(f"Too short to scan ({word_count} words), skipping")
+                log.info(f"Too short ({word_count} words), skipping")
                 return
             result = _detect(text)
-            log.info(f"SCAN RESULT: {path.name} → {result.ai_score:.0f}% [{result.risk_level}] {result.classification}")
+            log.info(f"SCAN RESULT: {path.name} → {result.ai_score:.0f}% [{result.risk_level}] {result.classification} | {result.llm_suspected}")
+            if result.reasons:
+                log.info(f"  Reasons: {' | '.join(result.reasons[:3])}")
             save_result(path, result)
-            # Show popup for ALL results so user knows it's working
             show_popup(result, path.name)
         except Exception as e:
             log.error(f"Scan error {path.name}: {e}", exc_info=True)
+
 
 def _watch_paths():
     home = Path.home()
@@ -442,18 +580,36 @@ def _watch_paths():
         p.mkdir(exist_ok=True)
         paths.append(p)
     if IS_WIN:
+        # OneDrive
         od = os.environ.get("ONEDRIVE")
         if od:
             for sub in ["Documents", "Desktop"]:
                 p = Path(od) / sub
                 if p.exists(): paths.append(p)
+        # Google Drive
+        for gd in [Path.home() / "Google Drive",
+                   Path("C:/Google Drive"),
+                   Path(os.environ.get("LOCALAPPDATA","")) / "Google/Drive/user_default/root"]:
+            if gd.exists(): paths.append(gd); break
+        # Dropbox
+        db_info = Path.home() / "AppData/Roaming/Dropbox/info.json"
+        if db_info.exists():
+            try:
+                info = json.loads(db_info.read_text())
+                db_path = Path(info.get("personal",{}).get("path",""))
+                if db_path.exists(): paths.append(db_path)
+            except: pass
+    elif IS_MAC:
+        for gd in [Path.home() / "Google Drive",
+                   Path.home() / "Library/CloudStorage/GoogleDrive-personal"]:
+            if gd.exists(): paths.append(gd); break
+        db = Path.home() / "Dropbox"
+        if db.exists(): paths.append(db)
     return paths
+
 
 def start_watcher(paths):
     from watchdog.events import FileSystemEventHandler
-
-    # Use PollingObserver on Windows - actively checks every 2 seconds
-    # Much more reliable than default WinAPI observer especially with OneDrive
     if IS_WIN:
         from watchdog.observers.polling import PollingObserver
         obs = PollingObserver(timeout=2)
@@ -476,70 +632,157 @@ def start_watcher(paths):
 
 
 # ════════════════════════════════════════════════════════════════════════════
+# RIGHT-CLICK CONTEXT MENU (Windows only)
+# ════════════════════════════════════════════════════════════════════════════
+
+def install_context_menu():
+    """Add 'Scan with AIScan' to Windows right-click menu."""
+    if not IS_WIN: return
+    try:
+        import winreg
+        exe = sys.executable if not getattr(sys, "frozen", False) else sys.argv[0]
+        exe_path = str(Path(exe).resolve())
+
+        # Register for all files
+        key_path = r"*\shell\ScanWithAIScan"
+        with winreg.CreateKey(winreg.HKEY_CLASSES_ROOT, key_path) as key:
+            winreg.SetValue(key, "", winreg.REG_SZ, "Scan with AIScan")
+            winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ, f"{exe_path},0")
+
+        cmd_path = key_path + r"\command"
+        with winreg.CreateKey(winreg.HKEY_CLASSES_ROOT, cmd_path) as key:
+            winreg.SetValue(key, "", winreg.REG_SZ, f'"{exe_path}" --scan "%1"')
+
+        log.info("Right-click context menu installed")
+    except Exception as e:
+        log.warning(f"Context menu install failed (try running as admin): {e}")
+
+
+def handle_cli_scan(file_path: str):
+    """Handle --scan <file> from right-click context menu."""
+    path = Path(file_path)
+    if not path.exists():
+        log.error(f"File not found: {file_path}")
+        return
+    log.info(f"CLI scan requested: {path.name}")
+    text = extract_text(path)
+    if not text or len(text.split()) < 15:
+        _show_simple_popup("AIScan", f"{path.name}\n\nFile too short or could not read content.")
+        return
+    result = _detect(text)
+    log.info(f"CLI SCAN RESULT: {path.name} → {result.ai_score:.0f}% [{result.risk_level}]")
+    save_result(path, result)
+    show_popup(result, path.name)
+    time.sleep(15)  # keep process alive for popup
+
+
+def _show_simple_popup(title, message):
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk(); root.withdraw()
+        messagebox.showinfo(title, message)
+        root.destroy()
+    except: pass
+
+
+# ════════════════════════════════════════════════════════════════════════════
 # SYSTEM TRAY
 # ════════════════════════════════════════════════════════════════════════════
 
-def _make_icon():
-    from PIL import Image, ImageDraw
-    img = Image.new("RGBA", (64,64), (0,0,0,0))
-    d = ImageDraw.Draw(img)
-    d.ellipse([2,2,62,62], fill=(13,13,20), outline=(0,229,255), width=2)
-    d.ellipse([8,22,56,42], fill=(0,229,255))
-    d.ellipse([20,26,44,38], fill=(245,245,255))
-    d.ellipse([26,28,38,36], fill=(13,13,20))
-    d.ellipse([30,30,34,34], fill=(255,255,255))
-    return img
-
 def run_tray(obs):
-    import webbrowser
-
     if IS_WIN:
-        import pystray
-        _paused = [False]
+        _run_tray_win(obs)
+    elif IS_MAC:
+        _run_tray_mac(obs)
+    else:
+        try:
+            while True: time.sleep(1)
+        except KeyboardInterrupt:
+            obs.stop()
 
-        def toggle_pause(icon, item):
-            if _paused[0]:
-                obs.start(); _paused[0] = False; icon.title = "AIScan — Active"
+
+def _run_tray_win(obs):
+    try:
+        import pystray
+        from PIL import Image, ImageDraw
+        img = Image.new("RGBA", (64,64), (0,0,0,0))
+        d   = ImageDraw.Draw(img)
+        d.ellipse([4,4,60,60], fill="#0d0d14", outline="#00e5ff", width=3)
+        d.ellipse([18,18,46,46], fill="#00e5ff")
+        d.ellipse([26,26,38,38], fill="#0d0d14")
+
+        paused = [False]
+
+        def on_history(icon, item):
+            if HISTORY_HTML.exists():
+                webbrowser.open(HISTORY_HTML.as_uri())
+
+        def on_pause(icon, item):
+            paused[0] = not paused[0]
+            if paused[0]: obs.stop()
             else:
-                obs.stop(); _paused[0] = True; icon.title = "AIScan — Paused"
+                paths = _watch_paths()
+                obs2 = start_watcher(paths)
+                obs2.join(0)
+
+        def on_exit(icon, item):
+            icon.stop()
+            obs.stop()
 
         menu = pystray.Menu(
-            pystray.MenuItem("AIScan — Active", None, enabled=False),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("View Scan History", lambda *_: webbrowser.open(HISTORY_HTML.as_uri())),
-            pystray.MenuItem("Pause / Resume",    toggle_pause),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Exit", lambda *_: (obs.stop(), icon.stop(), sys.exit(0))),
+            pystray.MenuItem("View History", on_history),
+            pystray.MenuItem("Pause / Resume", on_pause),
+            pystray.MenuItem("Exit", on_exit)
         )
-        icon = pystray.Icon("AIScan", _make_icon(), "AIScan — Active", menu)
+        icon = pystray.Icon("AIScan", img, "AIScan — AI monitoring active", menu)
         icon.run()
-
-    elif IS_MAC:
+    except Exception as e:
+        log.error(f"Tray error: {e}")
         try:
-            import rumps
-            app = rumps.App("🔍", quit_button=None)
-            _paused = [False]
-
-            @rumps.clicked("View Scan History")
-            def view_history(_): webbrowser.open(HISTORY_HTML.as_uri())
-
-            @rumps.clicked("Pause / Resume")
-            def toggle(sender):
-                if _paused[0]: obs.start(); _paused[0]=False; app.title="🔍"
-                else: obs.stop(); _paused[0]=True; app.title="⏸"
-
-            @rumps.clicked("Quit AIScan")
-            def quit(_): obs.stop(); rumps.quit_application()
-
-            app.menu = ["View Scan History", "Pause / Resume", None, "Quit AIScan"]
-            app.run()
-        except ImportError:
-            while True: time.sleep(60)
+            while True: time.sleep(1)
+        except KeyboardInterrupt:
+            obs.stop()
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# ENTRY POINT
-# ════════════════════════════════════════════════════════════════════════════
+def _run_tray_mac(obs):
+    try:
+        import rumps
+        class AIScanApp(rumps.App):
+            def __init__(self):
+                super().__init__("🔍", quit_button=None)
+                self.menu = ["View History", "Pause", rumps.separator, "Quit"]
+                self._obs = obs
+                self._paused = False
+
+            @rumps.clicked("View History")
+            def view_history(self, _):
+                if HISTORY_HTML.exists():
+                    webbrowser.open(HISTORY_HTML.as_uri())
+
+            @rumps.clicked("Pause")
+            def toggle_pause(self, sender):
+                self._paused = not self._paused
+                if self._paused:
+                    self._obs.stop()
+                    sender.title = "Resume"
+                else:
+                    paths = _watch_paths()
+                    self._obs = start_watcher(paths)
+                    sender.title = "Pause"
+
+            @rumps.clicked("Quit")
+            def quit_app(self, _):
+                self._obs.stop()
+                rumps.quit_application()
+
+        AIScanApp().run()
+    except Exception as e:
+        log.error(f"Mac tray error: {e}")
+        try:
+            while True: time.sleep(1)
+        except KeyboardInterrupt:
+            obs.stop()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -551,7 +794,7 @@ import hmac, hashlib
 LICENSE_SECRET = "aiscan-2026-navrekh-secret-xK9mP2qR"
 LICENSE_FILE   = DATA_DIR / "license.json"
 TRIAL_DAYS     = 14
-RAZORPAY_URL   = "https://rzp.io/rzp/sdbqn0r"  
+RAZORPAY_URL   = "https://rzp.io/rzp/sdbqn0r"
 
 def _lic_load():
     if LICENSE_FILE.exists():
@@ -589,11 +832,10 @@ def activate_license(email, key):
     return False, "Invalid key. Please check your email and key."
 
 def show_trial_banner(days_left):
-    """Show a small non-blocking trial reminder."""
     try:
         import tkinter as tk
-        root = tk.Tk(); root.withdraw()
         from tkinter import messagebox
+        root = tk.Tk(); root.withdraw()
         messagebox.showinfo("AIScan Trial",
             f"You have {days_left} day{'s' if days_left != 1 else ''} left in your free trial.\n\n"
             f"Upgrade at:\n{RAZORPAY_URL}")
@@ -601,123 +843,122 @@ def show_trial_banner(days_left):
     except: pass
 
 def show_expired_screen():
-    """Blocking upgrade screen shown when trial expires."""
     import tkinter as tk
-    from tkinter import messagebox
     import webbrowser
-
     root = tk.Tk()
     root.title("AIScan — Trial Expired")
     root.configure(bg="#0d0d14")
     root.geometry("460x420")
     root.resizable(False, False)
     root.attributes("-topmost", True)
-
-    # Center on screen
-    root.update_idletasks()
     x = (root.winfo_screenwidth()  - 460) // 2
     y = (root.winfo_screenheight() - 420) // 2
     root.geometry(f"460x420+{x}+{y}")
-
     tk.Frame(root, bg="#c8401a", height=4).pack(fill="x")
-
-    tk.Label(root, text="⏰  Trial Expired",
-             font=("Helvetica", 18, "bold"), fg="#ff6644", bg="#0d0d14"
-             ).pack(pady=(28, 4))
+    tk.Label(root, text="⏰  Trial Expired", font=("Helvetica",18,"bold"),
+             fg="#ff6644", bg="#0d0d14").pack(pady=(28,4))
     tk.Label(root, text="Your 14-day free trial has ended.",
-             font=("Helvetica", 11), fg="#888", bg="#0d0d14").pack()
+             font=("Helvetica",11), fg="#888", bg="#0d0d14").pack()
     tk.Label(root, text="Upgrade to keep using AIScan.",
-             font=("Helvetica", 11), fg="#888", bg="#0d0d14").pack(pady=(0, 20))
-
-    # Upgrade button
+             font=("Helvetica",11), fg="#888", bg="#0d0d14").pack(pady=(0,20))
     tk.Button(root, text="Upgrade Now  —  ₹499/month",
-              font=("Helvetica", 12, "bold"), fg="#000", bg="#00e5ff",
+              font=("Helvetica",12,"bold"), fg="#000", bg="#00e5ff",
               relief="flat", padx=20, pady=10, cursor="hand2",
-              command=lambda: webbrowser.open(RAZORPAY_URL)
-              ).pack(pady=(0, 20))
-
-    # License key entry
+              command=lambda: webbrowser.open(RAZORPAY_URL)).pack(pady=(0,20))
     tk.Label(root, text="Already purchased? Enter your license key:",
-             font=("Helvetica", 10), fg="#666", bg="#0d0d14").pack()
-
+             font=("Helvetica",10), fg="#666", bg="#0d0d14").pack()
     email_var = tk.StringVar()
     key_var   = tk.StringVar()
     msg_var   = tk.StringVar()
-
     ef = tk.Frame(root, bg="#0d0d14"); ef.pack(pady=(8,0))
     tk.Label(ef, text="Email:", font=("Helvetica",10), fg="#888", bg="#0d0d14",
              width=8, anchor="e").pack(side="left")
     tk.Entry(ef, textvariable=email_var, font=("Courier",10),
              bg="#1a1a28", fg="#e8e8f0", insertbackground="#fff",
              relief="flat", width=28).pack(side="left", padx=4)
-
     kf = tk.Frame(root, bg="#0d0d14"); kf.pack(pady=4)
     tk.Label(kf, text="Key:", font=("Helvetica",10), fg="#888", bg="#0d0d14",
              width=8, anchor="e").pack(side="left")
     tk.Entry(kf, textvariable=key_var, font=("Courier",10),
              bg="#1a1a28", fg="#e8e8f0", insertbackground="#fff",
              relief="flat", width=28).pack(side="left", padx=4)
-
     tk.Label(root, textvariable=msg_var, font=("Helvetica",9),
              fg="#ff6644", bg="#0d0d14").pack(pady=4)
-
     def try_activate():
         ok, msg = activate_license(email_var.get(), key_var.get())
-        if ok:
-            msg_var.set("✓ " + msg)
-            root.after(1500, root.destroy)
-        else:
-            msg_var.set("✗ " + msg)
-
+        msg_var.set(("✓ " if ok else "✗ ") + msg)
+        if ok: root.after(1500, root.destroy)
     tk.Button(root, text="Activate License",
-              font=("Helvetica", 10, "bold"), fg="#000", bg="#44cc77",
+              font=("Helvetica",10,"bold"), fg="#000", bg="#44cc77",
               relief="flat", padx=14, pady=6, cursor="hand2",
-              command=try_activate).pack(pady=(0, 16))
-
+              command=try_activate).pack(pady=(0,16))
     root.mainloop()
 
-def main():
-    log.info(f"AIScan starting. Data: {DATA_DIR}")
 
-    # ── License check ─────────────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════════════════════
+# TEST SCAN
+# ════════════════════════════════════════════════════════════════════════════
+
+def _test_scan():
+    log.info("Running startup test scan...")
+    test_text = ("Furthermore it is important to note that leveraging robust AI frameworks "
+                 "plays a crucial role in achieving paradigm shifts. Moreover cutting-edge "
+                 "solutions enable organizations to optimize their workflows and facilitate "
+                 "seamless integration across multiple touchpoints. This demonstrates the "
+                 "importance of utilizing cutting-edge technology to empower teams.")
+    result = _detect(test_text)
+    log.info(f"Test scan: {result.ai_score:.0f}% [{result.risk_level}] — detection WORKING ✓")
+    if result.reasons:
+        log.info(f"  Detected: {' | '.join(result.reasons[:3])}")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ════════════════════════════════════════════════════════════════════════════
+
+def main():
+    log.info(f"AIScan v2.0 starting. Data: {DATA_DIR}")
+
+    # Handle right-click scan
+    if len(sys.argv) >= 3 and sys.argv[1] == "--scan":
+        handle_cli_scan(sys.argv[2])
+        return
+
+    # Install right-click menu
+    threading.Thread(target=install_context_menu, daemon=True).start()
+
+    # License check
     lic = get_license_status()
     log.info(f"License status: {lic['status']}")
 
     if lic["status"] == "expired":
-        log.info("Trial expired — showing upgrade screen")
         show_expired_screen()
-        # Re-check after they may have activated
         lic = get_license_status()
         if lic["status"] != "active":
-            sys.exit(0)  # exit if still not activated
-
+            sys.exit(0)
     elif lic["status"] == "trial" and lic["days_left"] <= 3:
-        # Warn when 3 or fewer days left
-        threading.Thread(target=show_trial_banner,
-                         args=(lic["days_left"],), daemon=True).start()
+        threading.Thread(target=show_trial_banner, args=(lic["days_left"],), daemon=True).start()
 
-    # Initialise history page
+    # Init history
     if not HISTORY_HTML.exists():
         _rebuild_html()
 
-    # Start watching
+    # Start watcher
     paths = _watch_paths()
     obs = start_watcher(paths)
+    log.info("Watching: " + ", ".join(str(p) for p in paths))
 
-    log.info("AIScan is running. Watching: " + ", ".join(str(p) for p in paths))
-
-    # Run test scan on startup to verify detection works
+    # Startup test
     threading.Thread(target=_test_scan, daemon=True).start()
 
-    # Show startup notification
+    # Startup notification
     if IS_WIN:
         try:
             from plyer import notification
-            notification.notify(title="AIScan", message="AI monitoring active.",
+            notification.notify(title="AIScan", message="AI monitoring active — v2.0",
                                 app_name="AIScan", timeout=4)
-        except Exception: pass
+        except: pass
 
-    # Run tray (blocks until exit)
     try:
         run_tray(obs)
     except KeyboardInterrupt:
