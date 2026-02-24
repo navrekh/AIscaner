@@ -9,6 +9,25 @@ from logging.handlers import RotatingFileHandler
 from dataclasses import dataclass, field
 
 IS_WIN = sys.platform == "win32"
+
+# ── Intelligence engine (inline import to keep single-file deploy) ────────
+def _load_intelligence():
+    """Load intelligence module if available."""
+    try:
+        import importlib.util, os
+        intel_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intelligence.py")
+        if getattr(sys, "frozen", False):
+            # In frozen exe, intelligence is bundled
+            from intelligence import (BehavioralFingerprint, KeystrokeRhythm,
+                                      DocumentDNA, SourceVerifier, combine_signals)
+        else:
+            spec = importlib.util.spec_from_file_location("intelligence", intel_path)
+            m = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(m)
+            return m
+    except Exception as e:
+        return None
+
 IS_MAC = sys.platform == "darwin"
 
 if IS_WIN:
@@ -32,6 +51,18 @@ log = logging.getLogger("aiscan")
 
 HISTORY_FILE = DATA_DIR / "scan_log.jsonl"
 HISTORY_HTML = DATA_DIR / "scan_history.html"
+
+# ── Initialize intelligence systems ─────────────────────────────────────
+_intel = _load_intelligence()
+if _intel:
+    _behavioral   = _intel.BehavioralFingerprint(DATA_DIR)
+    _keystroke    = _intel.KeystrokeRhythm()
+    _dna          = _intel.DocumentDNA(DATA_DIR)
+    _source_verifier = _intel.SourceVerifier()
+    log.info("Intelligence engine loaded ✓")
+else:
+    _behavioral = _keystroke = _dna = _source_verifier = None
+    log.warning("Intelligence engine not available — running basic detection")
 
 # ════════════════════════════════════════════════════════════════════════════
 # DETECTION ENGINE v2 — Smarter, per-paragraph, LLM fingerprinting
@@ -562,10 +593,57 @@ class _Handler:
             if word_count < 15:
                 log.info(f"Too short ({word_count} words), skipping")
                 return
+
+            # Base detection
             result = _detect(text)
-            log.info(f"SCAN RESULT: {path.name} → {result.ai_score:.0f}% [{result.risk_level}] {result.classification} | {result.llm_suspected}")
+            log.info(f"BASE SCAN: {path.name} → {result.ai_score:.0f}% [{result.risk_level}] {result.classification} | {result.llm_suspected}")
+
+            # ── Intelligence layer ─────────────────────────────────────────
+            if _intel:
+                # 1. Behavioral fingerprint
+                beh = _behavioral.deviation_score(text)
+
+                # 2. Keystroke rhythm
+                key = _keystroke.analyze_growth(path, word_count)
+
+                # 3. Document DNA
+                dna = _dna.record(path, text)
+
+                # 4. Source verification (async, only for high scores)
+                src = (False, "Low", "Not checked")
+                if result.ai_score >= 55:
+                    try:
+                        src = _source_verifier.verify(text)
+                    except: pass
+
+                # Combine all signals
+                intel_result = _intel.combine_signals(
+                    base_score=result.ai_score,
+                    behavioral=beh,
+                    keystroke=key,
+                    dna=dna,
+                    source=src,
+                    reasons=result.reasons
+                )
+
+                # Update result with intelligence-enhanced score
+                result.ai_score = intel_result.final_score
+                result.reasons  = intel_result.all_reasons
+
+                # Update risk level based on new score
+                if result.ai_score >= 75:    result.risk_level = "High"
+                elif result.ai_score >= 45:  result.risk_level = "Medium"
+                else:                        result.risk_level = "Low"
+
+                log.info(f"INTEL RESULT: {path.name} → {intel_result.intelligence_summary}")
+
+                # Update behavioral profile if human-written
+                if result.ai_score < 30:
+                    _behavioral.update_profile(text, result.ai_score)
+
             if result.reasons:
                 log.info(f"  Reasons: {' | '.join(result.reasons[:3])}")
+
             save_result(path, result)
             show_popup(result, path.name)
         except Exception as e:
