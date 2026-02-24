@@ -336,6 +336,15 @@ def show_popup(result: ScanResult, filename: str):
     """Show native popup. Non-blocking."""
     threading.Thread(target=_popup, args=(result, filename), daemon=True).start()
 
+def _test_scan(test_path=None):
+    """Run a test scan to verify everything is working."""
+    import tempfile
+    log.info("Running test scan to verify detection is working...")
+    test_text = "Furthermore it is important to note that leveraging robust AI frameworks plays a crucial role in achieving paradigm shifts. Moreover cutting-edge solutions enable organizations to optimize their workflows and facilitate seamless integration across multiple touchpoints."
+    result = _detect(test_text)
+    log.info(f"Test scan result: {result.ai_score:.0f}% [{result.risk_level}] — {'WORKING ✓' if result.ai_score > 20 else 'WARNING: low score, check model'}")
+    return result
+
 def _popup(result: ScanResult, filename: str):
     score = result.ai_score
     risk  = result.risk_level
@@ -420,21 +429,29 @@ class _Handler:
         if path.suffix.lower() not in SUPPORTED: return
         if path.name.startswith(("~$",".",".~")): return
         now = time.time()
-        if now - self._debounce.get(str(path), 0) < 2.0: return
+        if now - self._debounce.get(str(path), 0) < 1.0: return
         self._debounce[str(path)] = now
         threading.Thread(target=self._scan, args=(path,), daemon=True).start()
 
     def _scan(self, path: Path):
         try:
+            log.info(f"Starting scan: {path.name}")
             text = extract_text(path)
-            if not text or len(text.split()) < 30: return
+            if not text:
+                log.info(f"No text extracted from {path.name}")
+                return
+            word_count = len(text.split())
+            log.info(f"Extracted {word_count} words from {path.name}")
+            if word_count < 15:
+                log.info(f"Too short to scan ({word_count} words), skipping")
+                return
             result = _detect(text)
-            log.info(f"Scanned: {path.name} → {result.ai_score:.0f}% [{result.risk_level}]")
+            log.info(f"SCAN RESULT: {path.name} → {result.ai_score:.0f}% [{result.risk_level}] {result.classification}")
             save_result(path, result)
-            if result.risk_level in ("Medium", "High"):
-                show_popup(result, path.name)
+            # Show popup for ALL results so user knows it's working
+            show_popup(result, path.name)
         except Exception as e:
-            log.debug(f"Scan error {path.name}: {e}")
+            log.error(f"Scan error {path.name}: {e}", exc_info=True)
 
 def _watch_paths():
     home = Path.home()
@@ -452,8 +469,17 @@ def _watch_paths():
     return paths
 
 def start_watcher(paths):
-    from watchdog.observers import Observer
     from watchdog.events import FileSystemEventHandler
+
+    # Use PollingObserver on Windows - actively checks every 2 seconds
+    # Much more reliable than default WinAPI observer especially with OneDrive
+    if IS_WIN:
+        from watchdog.observers.polling import PollingObserver
+        obs = PollingObserver(timeout=2)
+        log.info("Using PollingObserver for Windows")
+    else:
+        from watchdog.observers import Observer
+        obs = Observer()
 
     handler = _Handler()
 
@@ -461,7 +487,6 @@ def start_watcher(paths):
         def on_created(self, e): handler.dispatch(e)
         def on_modified(self, e): handler.dispatch(e)
 
-    obs = Observer()
     for p in paths:
         obs.schedule(WDHandler(), str(p), recursive=True)
         log.info(f"Watching: {p}")
@@ -699,6 +724,9 @@ def main():
     obs = start_watcher(paths)
 
     log.info("AIScan is running. Watching: " + ", ".join(str(p) for p in paths))
+
+    # Run test scan on startup to verify detection works
+    threading.Thread(target=_test_scan, daemon=True).start()
 
     # Show startup notification
     if IS_WIN:
