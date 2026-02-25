@@ -221,7 +221,7 @@ tr:hover td {{ background:#131320 }}
 def show_bulk_scan_ui(folder: Path, extract_fn, detect_fn, history_html: Path):
     """Show a bulk scan progress window and generate report."""
     import tkinter as tk
-    from tkinter import ttk
+    import tkinter.ttk as ttk
     import webbrowser
 
     root = tk.Tk()
