@@ -85,8 +85,13 @@ _bulk_mod = _load_module("bulk_scanner")
 if _bulk_mod:
     log.info("Bulk scanner loaded ✓")
 
-_screen_mod = _load_module("screen_monitor")
+_screen_mod     = _load_module("screen_monitor")
+_settings_mod   = _load_module("settings_ui")
+_onboard_mod    = _load_module("onboarding")
+_report_mod     = _load_module("report_generator")
 _screen_monitor = None  # initialized in main()
+_settings_mgr   = _settings_mod.SettingsManager(DATA_DIR) if _settings_mod else None
+if _settings_mgr: log.info("Settings loaded ✓")
 
 # ════════════════════════════════════════════════════════════════════════════
 # DETECTION ENGINE v2 — Smarter, per-paragraph, LLM fingerprinting
@@ -701,6 +706,31 @@ class _Handler:
 
             save_result(path, result)
             show_popup(result, path.name)
+
+            # Auto-save PDF report if enabled
+            if (_report_mod and _settings_mgr and
+                    _settings_mgr.settings.auto_save_reports):
+                try:
+                    reports_dir = Path(_settings_mgr.settings.reports_folder or
+                                       str(Path.home() / "Documents" / "AIScan Reports"))
+                    reports_dir.mkdir(parents=True, exist_ok=True)
+                    pdf_name = f"AIScan_{path.stem}_{int(time.time())}.pdf"
+                    pdf_path = reports_dir / pdf_name
+                    _report_mod.generate_scan_report(
+                        filename=path.name,
+                        ai_score=result.ai_score,
+                        risk_level=result.risk_level,
+                        classification=result.classification,
+                        llm_suspected=result.llm_suspected,
+                        confidence=result.confidence,
+                        reasons=result.reasons,
+                        paragraph_results=result.paragraph_results,
+                        output_path=pdf_path,
+                    )
+                    log.info(f"PDF report saved: {pdf_path.name}")
+                except Exception as pe:
+                    log.debug(f"PDF report error: {pe}")
+
         except Exception as e:
             log.error(f"Scan error {path.name}: {e}", exc_info=True)
 
@@ -906,11 +936,45 @@ def _run_tray_win(obs):
                         f"Saves: {analysis['save_count']}\n"
                         f"Need at least 3 saves over 3+ minutes.")
 
+        def on_settings(icon, item):
+            if _settings_mod and _settings_mgr:
+                threading.Thread(target=_settings_mod.show_settings_window,
+                                 args=(_settings_mgr,), daemon=True).start()
+            else:
+                _show_simple_popup("AIScan", "Settings module not available.")
+
+        def on_generate_report(icon, item):
+            import tkinter.filedialog as fd
+            file = fd.askopenfilename(
+                title="Select document to generate report for",
+                filetypes=[("Documents","*.docx *.pdf *.txt *.xlsx *.pptx")])
+            if file and _report_mod:
+                path = Path(file)
+                text = extract_text(path)
+                if text and len(text.split()) >= 15:
+                    result = _detect(text)
+                    save_path = DATA_DIR / f"report_{path.stem}.pdf"
+                    _report_mod.generate_scan_report(
+                        filename=path.name,
+                        ai_score=result.ai_score,
+                        risk_level=result.risk_level,
+                        classification=result.classification,
+                        llm_suspected=result.llm_suspected,
+                        confidence=result.confidence,
+                        reasons=result.reasons,
+                        paragraph_results=result.paragraph_results,
+                        output_path=save_path,
+                    )
+                    webbrowser.open(save_path.as_uri())
+                    log.info(f"Report generated: {save_path}")
+
         menu = pystray.Menu(
             pystray.MenuItem("View History", on_history),
+            pystray.MenuItem("Generate Report...", on_generate_report),
             pystray.MenuItem("Bulk Scan Folder...", on_bulk_scan),
             pystray.MenuItem("View Certificate...", on_view_certificate),
             pystray.MenuItem("Toggle Screen Monitor", on_toggle_screen),
+            pystray.MenuItem("Settings", on_settings),
             pystray.MenuItem("Pause / Resume All", on_pause),
             pystray.MenuItem("Exit", on_exit)
         )
@@ -1248,7 +1312,7 @@ def _clipboard_popup(result: ScanResult, text: str):
         log.debug(f"Clipboard popup failed: {e}")
 
 def main():
-    log.info(f"AIScan v2.0 starting. Data: {DATA_DIR}")
+    log.info(f"AIScan v4 starting. Data: {DATA_DIR}")
 
     # Handle right-click scan
     if len(sys.argv) >= 3 and sys.argv[1] == "--scan":
@@ -1257,6 +1321,11 @@ def main():
 
     # Install right-click menu
     threading.Thread(target=install_context_menu, daemon=True).start()
+
+    # ── Onboarding (first run only) ────────────────────────────────────────
+    if _onboard_mod and _onboard_mod.should_show_onboarding(DATA_DIR):
+        log.info("First run — showing onboarding")
+        _onboard_mod.show_onboarding(DATA_DIR, _detect, HISTORY_HTML)
 
     # License check
     lic = get_license_status()
