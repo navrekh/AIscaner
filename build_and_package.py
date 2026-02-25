@@ -83,6 +83,14 @@ cmd = [
     "--hidden-import", "sklearn.neighbors.typedefs",
     "--hidden-import", "sklearn.neighbors._partition_nodes",
 
+    # Hidden imports - tkinter (PyInstaller misses ttk on Windows)
+    "--hidden-import", "tkinter",
+    "--hidden-import", "tkinter.ttk",
+    "--hidden-import", "tkinter.filedialog",
+    "--hidden-import", "tkinter.messagebox",
+    "--hidden-import", "tkinter.simpledialog",
+    "--hidden-import", "_tkinter",
+
     # Hidden imports - screen capture
     "--hidden-import", "mss",
     "--hidden-import", "mss.base",
