@@ -1,18 +1,35 @@
 """
 AIScan v5 Build Script
 Run this locally or via GitHub Actions to produce the installer.
+Fixes applied:
+  - Windows console encoding (cp1252 -> utf-8)
+  - tkinter.ttk hidden imports
+  - reportlab fonts bundled (required for PDF reports)
+  - CREATE_NO_WINDOW for subprocess calls
+  - All 8 companion modules bundled
 """
 import os, sys, subprocess, shutil
 from pathlib import Path
 
-# Fix Windows console encoding (prevents UnicodeEncodeError on cp1252)
+# Fix Windows console encoding FIRST before any print()
 if sys.platform == "win32":
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 print("=== AIScan v5 Build ===")
 print()
 
-# -- Step 1: Clear old build cache ----------------------------------------
+IS_WIN = sys.platform == "win32"
+IS_MAC = sys.platform == "darwin"
+SEP    = ";" if IS_WIN else ":"
+
+# Subprocess flags - hide console window on Windows
+RUN_FLAGS = {}
+if IS_WIN:
+    RUN_FLAGS["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+
+# -- Step 1: Clear old build cache -----------------------------------------
 print("Clearing build cache...")
 for d in ["build", "dist"]:
     if Path(d).exists():
@@ -22,7 +39,7 @@ for f in Path(".").glob("*.spec"):
     f.unlink()
     print(f"  Deleted {f}")
 
-# -- Step 2: Verify all source files exist --------------------------------
+# -- Step 2: Verify all source files exist ---------------------------------
 print()
 print("Verifying source files...")
 required_files = [
@@ -45,13 +62,24 @@ for f in required_files:
     size = Path(f).stat().st_size
     print(f"  OK {f} ({size} bytes)")
 
-# -- Step 3: PyInstaller build ---------------------------------------------
+# -- Step 3: Find reportlab data path (fonts required for PDF) -------------
 print()
-is_windows = sys.platform == "win32"
-is_mac     = sys.platform == "darwin"
-sep        = ";" if is_windows else ":"
+print("Locating reportlab fonts...")
+try:
+    import reportlab
+    rl_dir = Path(reportlab.__file__).parent
+    rl_fonts  = rl_dir / "fonts"
+    rl_lib    = rl_dir / "lib"
+    print(f"  reportlab: {rl_dir}")
+    print(f"  fonts:     {rl_fonts} (exists={rl_fonts.exists()})")
+except ImportError:
+    print("  ERROR: reportlab not installed - run: pip install reportlab")
+    sys.exit(1)
 
-# All companion modules to bundle
+# -- Step 4: Build with PyInstaller ----------------------------------------
+print()
+print(f"Building for: {'Windows' if IS_WIN else 'macOS'}")
+
 companion_modules = [
     "intelligence",
     "advanced_detection",
@@ -62,26 +90,21 @@ companion_modules = [
     "onboarding",
     "report_generator",
 ]
-
-print(f"Building for: {'Windows' if is_windows else 'macOS'}")
-print(f"Bundling {len(companion_modules)} modules...")
+print(f"Bundling {len(companion_modules)} companion modules...")
 
 cmd = [
     sys.executable, "-m", "PyInstaller",
-    "--onefile" if is_windows else "--onedir",
+    "--onefile" if IS_WIN else "--onedir",
     "--windowed",
     "--name", "AIScan",
 
     # Bundle all companion modules
     *[arg for m in companion_modules
-      for arg in ("--add-data", f"{m}.py{sep}.")],
+      for arg in ("--add-data", f"{m}.py{SEP}.")],
 
-    # Hidden imports - detection + watchdog
-    "--hidden-import", "watchdog.observers.polling",
-    "--hidden-import", "sklearn.ensemble._forest",
-    "--hidden-import", "sklearn.utils._cython_blas",
-    "--hidden-import", "sklearn.neighbors.typedefs",
-    "--hidden-import", "sklearn.neighbors._partition_nodes",
+    # Bundle reportlab fonts and lib (required for PDF generation)
+    "--add-data", f"{rl_fonts}{SEP}reportlab/fonts",
+    "--add-data", f"{rl_lib}{SEP}reportlab/lib",
 
     # Hidden imports - tkinter (PyInstaller misses ttk on Windows)
     "--hidden-import", "tkinter",
@@ -91,17 +114,32 @@ cmd = [
     "--hidden-import", "tkinter.simpledialog",
     "--hidden-import", "_tkinter",
 
+    # Hidden imports - watchdog + sklearn
+    "--hidden-import", "watchdog.observers.polling",
+    "--hidden-import", "sklearn.ensemble._forest",
+    "--hidden-import", "sklearn.utils._cython_blas",
+    "--hidden-import", "sklearn.neighbors.typedefs",
+    "--hidden-import", "sklearn.neighbors._partition_nodes",
+
     # Hidden imports - screen capture
     "--hidden-import", "mss",
     "--hidden-import", "mss.base",
     "--hidden-import", "mss.tools",
 
     # Hidden imports - PDF reports
+    "--hidden-import", "reportlab",
     "--hidden-import", "reportlab.pdfgen",
+    "--hidden-import", "reportlab.pdfgen.canvas",
     "--hidden-import", "reportlab.lib.pagesizes",
     "--hidden-import", "reportlab.lib.units",
     "--hidden-import", "reportlab.lib.colors",
     "--hidden-import", "reportlab.platypus",
+    "--hidden-import", "reportlab.pdfbase",
+    "--hidden-import", "reportlab.pdfbase.pdfmetrics",
+    "--hidden-import", "reportlab.pdfbase.ttfonts",
+
+    # Collect all reportlab subpackages
+    "--collect-submodules", "reportlab",
 
     # Excludes (keep exe size down)
     "--exclude-module", "matplotlib",
@@ -111,10 +149,12 @@ cmd = [
     "--exclude-module", "tensorflow",
     "--exclude-module", "torch",
     "--exclude-module", "cv2",
+    "--exclude-module", "notebook",
+    "--exclude-module", "IPython",
 ]
 
-# Platform-specific
-if is_windows:
+# Platform-specific hidden imports
+if IS_WIN:
     cmd += [
         "--hidden-import", "watchdog.observers.winapi",
         "--hidden-import", "pystray._win32",
@@ -125,7 +165,7 @@ if is_windows:
         "--hidden-import", "comtypes",
         "--hidden-import", "comtypes.client",
     ]
-elif is_mac:
+elif IS_MAC:
     cmd += [
         "--hidden-import", "watchdog.observers.fsevents",
         "--hidden-import", "rumps",
@@ -137,17 +177,17 @@ cmd.append("agent_standalone.py")
 
 print()
 print("Running PyInstaller...")
-result = subprocess.run(cmd)
+result = subprocess.run(cmd, **RUN_FLAGS)
 
 if result.returncode != 0:
     print()
-    print("BUILD FAILED")
+    print("BUILD FAILED - check output above for errors")
     sys.exit(1)
 
-# -- Step 4: Verify output -------------------------------------------------
+# -- Step 5: Verify output -------------------------------------------------
 print()
 print("Verifying output...")
-if is_windows:
+if IS_WIN:
     exe = Path("dist/AIScan.exe")
     if exe.exists():
         size_mb = exe.stat().st_size / 1024 / 1024
