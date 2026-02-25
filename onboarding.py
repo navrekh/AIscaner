@@ -24,7 +24,7 @@ def mark_onboarding_done(data_dir: Path):
 def show_onboarding(data_dir: Path, detect_fn, history_html: Path):
     """Show onboarding wizard. Blocking — call before starting main app."""
     import tkinter as tk
-    from tkinter import ttk
+    import tkinter.ttk as ttk
 
     root = tk.Tk()
     root.title("Welcome to AIScan")
