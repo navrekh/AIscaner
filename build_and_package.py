@@ -121,10 +121,16 @@ cmd = [
     "--hidden-import", "sklearn.neighbors.typedefs",
     "--hidden-import", "sklearn.neighbors._partition_nodes",
 
-    # Hidden imports - screen capture
+    # Hidden imports - screen capture (mss + PIL for screenshot fallback)
     "--hidden-import", "mss",
     "--hidden-import", "mss.base",
     "--hidden-import", "mss.tools",
+    "--hidden-import", "PIL",
+    "--hidden-import", "PIL.Image",
+    "--hidden-import", "PIL.ImageGrab",
+    "--hidden-import", "PIL.ImageDraw",
+    "--hidden-import", "PIL.ImageFont",
+    "--collect-submodules", "PIL",
 
     # Hidden imports - PDF reports
     "--hidden-import", "reportlab",
