@@ -5,10 +5,14 @@ Run this locally or via GitHub Actions to produce the installer.
 import os, sys, subprocess, shutil
 from pathlib import Path
 
+# Fix Windows console encoding (prevents UnicodeEncodeError on cp1252)
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 print("=== AIScan v5 Build ===")
 print()
 
-# ── Step 1: Clear old build cache ────────────────────────────────────────
+# -- Step 1: Clear old build cache ----------------------------------------
 print("Clearing build cache...")
 for d in ["build", "dist"]:
     if Path(d).exists():
@@ -18,7 +22,7 @@ for f in Path(".").glob("*.spec"):
     f.unlink()
     print(f"  Deleted {f}")
 
-# ── Step 2: Verify all source files exist ────────────────────────────────
+# -- Step 2: Verify all source files exist --------------------------------
 print()
 print("Verifying source files...")
 required_files = [
@@ -39,9 +43,9 @@ if missing:
     sys.exit(1)
 for f in required_files:
     size = Path(f).stat().st_size
-    print(f"  ✓ {f} ({size} bytes)")
+    print(f"  OK {f} ({size} bytes)")
 
-# ── Step 3: PyInstaller build ─────────────────────────────────────────────
+# -- Step 3: PyInstaller build ---------------------------------------------
 print()
 is_windows = sys.platform == "win32"
 is_mac     = sys.platform == "darwin"
@@ -72,19 +76,19 @@ cmd = [
     *[arg for m in companion_modules
       for arg in ("--add-data", f"{m}.py{sep}.")],
 
-    # Hidden imports — detection + watchdog
+    # Hidden imports - detection + watchdog
     "--hidden-import", "watchdog.observers.polling",
     "--hidden-import", "sklearn.ensemble._forest",
     "--hidden-import", "sklearn.utils._cython_blas",
     "--hidden-import", "sklearn.neighbors.typedefs",
     "--hidden-import", "sklearn.neighbors._partition_nodes",
 
-    # Hidden imports — screen capture
+    # Hidden imports - screen capture
     "--hidden-import", "mss",
     "--hidden-import", "mss.base",
     "--hidden-import", "mss.tools",
 
-    # Hidden imports — PDF reports
+    # Hidden imports - PDF reports
     "--hidden-import", "reportlab.pdfgen",
     "--hidden-import", "reportlab.lib.pagesizes",
     "--hidden-import", "reportlab.lib.units",
@@ -132,24 +136,24 @@ if result.returncode != 0:
     print("BUILD FAILED")
     sys.exit(1)
 
-# ── Step 4: Verify output ─────────────────────────────────────────────────
+# -- Step 4: Verify output -------------------------------------------------
 print()
 print("Verifying output...")
 if is_windows:
     exe = Path("dist/AIScan.exe")
     if exe.exists():
         size_mb = exe.stat().st_size / 1024 / 1024
-        print(f"  ✓ dist/AIScan.exe ({size_mb:.1f} MB)")
+        print(f"  OK dist/AIScan.exe ({size_mb:.1f} MB)")
     else:
-        print("  ✗ dist/AIScan.exe NOT FOUND")
+        print("  FAIL dist/AIScan.exe NOT FOUND")
         sys.exit(1)
 else:
     app = Path("dist/AIScan.app")
     if app.exists():
-        print(f"  ✓ dist/AIScan.app")
+        print(f"  OK dist/AIScan.app")
     else:
-        print("  ✗ dist/AIScan.app NOT FOUND")
+        print("  FAIL dist/AIScan.app NOT FOUND")
         sys.exit(1)
 
 print()
-print("=== Build Complete ✓ ===")
+print("=== Build Complete ===")
