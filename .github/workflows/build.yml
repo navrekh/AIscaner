@@ -9,14 +9,15 @@ on:
 
 jobs:
 
-  # ─────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   # WINDOWS BUILD
-  # ─────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
   windows:
     runs-on: windows-latest
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: 1
+
     steps:
       - uses: actions/checkout@v4
 
@@ -24,19 +25,29 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib pystray plyer pywin32 mss reportlab comtypes
+      - name: Set console to UTF-8
+        run: chcp 65001
+        shell: cmd
 
-      - name: Verify key packages
+      - name: Install dependencies
+        run: pip install --upgrade pip pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib pystray plyer pywin32 mss reportlab comtypes
+        shell: cmd
+
+      - name: Verify all packages
         run: |
           python -c "import mss; print('mss OK')"
           python -c "from reportlab.lib.pagesizes import A4; print('reportlab OK')"
           python -c "import pystray; print('pystray OK')"
           python -c "import watchdog; print('watchdog OK')"
+          python -c "import tkinter; print('tkinter OK')"
+          python -c "import tkinter.ttk; print('tkinter.ttk OK')"
+          python -c "import comtypes; print('comtypes OK')"
+          python -c "import win32gui; print('pywin32 OK')"
+        shell: cmd
 
       - name: Build EXE
         run: python build_and_package.py
+        shell: cmd
 
       - name: Verify build output
         run: |
@@ -56,11 +67,12 @@ jobs:
           path: dist/AIScan.exe
           retention-days: 30
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # MAC — APPLE SILICON (M1/M2/M3)
-  # ─────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
+  # MAC - APPLE SILICON (M1/M2/M3)
+  # -------------------------------------------------------------------------
   macos-apple-silicon:
     runs-on: macos-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -69,14 +81,16 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib rumps plyer mss reportlab
+        run: pip install --upgrade pip pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib rumps plyer mss reportlab
 
-      - name: Verify key packages
+      - name: Verify all packages
         run: |
           python -c "import mss; print('mss OK')"
           python -c "from reportlab.lib.pagesizes import A4; print('reportlab OK')"
           python -c "import rumps; print('rumps OK')"
+          python -c "import tkinter; print('tkinter OK')"
+          python -c "import tkinter.ttk; print('tkinter.ttk OK')"
+          python -c "import watchdog; print('watchdog OK')"
 
       - name: Build App
         run: python build_and_package.py
@@ -105,11 +119,12 @@ jobs:
           path: AIScan-Mac-AppleSilicon.dmg
           retention-days: 30
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # MAC — INTEL (older Macs)
-  # ─────────────────────────────────────────────────────────────────────────
+  # -------------------------------------------------------------------------
+  # MAC - INTEL (older Macs)
+  # -------------------------------------------------------------------------
   macos-intel:
     runs-on: macos-13
+
     steps:
       - uses: actions/checkout@v4
 
@@ -118,14 +133,16 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: |
-          pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib rumps plyer mss reportlab
+        run: pip install --upgrade pip pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib rumps plyer mss reportlab
 
-      - name: Verify key packages
+      - name: Verify all packages
         run: |
           python -c "import mss; print('mss OK')"
           python -c "from reportlab.lib.pagesizes import A4; print('reportlab OK')"
           python -c "import rumps; print('rumps OK')"
+          python -c "import tkinter; print('tkinter OK')"
+          python -c "import tkinter.ttk; print('tkinter.ttk OK')"
+          python -c "import watchdog; print('watchdog OK')"
 
       - name: Build App
         run: python build_and_package.py
