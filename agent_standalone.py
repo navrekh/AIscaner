@@ -11,22 +11,29 @@ from dataclasses import dataclass, field
 IS_WIN = sys.platform == "win32"
 
 # ── Intelligence engine (inline import to keep single-file deploy) ────────
-def _load_intelligence():
-    """Load intelligence module if available."""
+def _load_module(name):
+    """Load a companion module if available."""
     try:
         import importlib.util, os
-        intel_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "intelligence.py")
-        if getattr(sys, "frozen", False):
-            # In frozen exe, intelligence is bundled
-            from intelligence import (BehavioralFingerprint, KeystrokeRhythm,
-                                      DocumentDNA, SourceVerifier, combine_signals)
-        else:
-            spec = importlib.util.spec_from_file_location("intelligence", intel_path)
-            m = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(m)
-            return m
+        base = os.path.dirname(os.path.abspath(
+            sys.argv[0] if getattr(sys, "frozen", False) else __file__))
+        path = os.path.join(base, f"{name}.py")
+        if not os.path.exists(path):
+            # Try same dir as script
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"{name}.py")
+        if not os.path.exists(path):
+            log.warning(f"Module {name}.py not found")
+            return None
+        spec = importlib.util.spec_from_file_location(name, path)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
     except Exception as e:
+        log.warning(f"Could not load {name}: {e}")
         return None
+
+def _load_intelligence():
+    return _load_module("intelligence")
 
 IS_MAC = sys.platform == "darwin"
 
@@ -52,17 +59,31 @@ log = logging.getLogger("aiscan")
 HISTORY_FILE = DATA_DIR / "scan_log.jsonl"
 HISTORY_HTML = DATA_DIR / "scan_history.html"
 
-# ── Initialize intelligence systems ─────────────────────────────────────
+# ── Initialize all modules ───────────────────────────────────────────────
 _intel = _load_intelligence()
 if _intel:
-    _behavioral   = _intel.BehavioralFingerprint(DATA_DIR)
-    _keystroke    = _intel.KeystrokeRhythm()
-    _dna          = _intel.DocumentDNA(DATA_DIR)
+    _behavioral      = _intel.BehavioralFingerprint(DATA_DIR)
+    _keystroke       = _intel.KeystrokeRhythm()
+    _dna             = _intel.DocumentDNA(DATA_DIR)
     _source_verifier = _intel.SourceVerifier()
     log.info("Intelligence engine loaded ✓")
 else:
     _behavioral = _keystroke = _dna = _source_verifier = None
-    log.warning("Intelligence engine not available — running basic detection")
+
+_advanced = _load_module("advanced_detection")
+if _advanced:
+    log.info("Advanced detection loaded ✓ (code, rewrite, multilingual, images)")
+else:
+    log.warning("Advanced detection not available")
+
+_session_mod = _load_module("session_recorder")
+_session_recorder = _session_mod.SessionRecorder(DATA_DIR) if _session_mod else None
+if _session_recorder:
+    log.info("Session recorder loaded ✓")
+
+_bulk_mod = _load_module("bulk_scanner")
+if _bulk_mod:
+    log.info("Bulk scanner loaded ✓")
 
 # ════════════════════════════════════════════════════════════════════════════
 # DETECTION ENGINE v2 — Smarter, per-paragraph, LLM fingerprinting
@@ -594,6 +615,37 @@ class _Handler:
                 log.info(f"Too short ({word_count} words), skipping")
                 return
 
+            # ── Session recording ──────────────────────────────────────────
+            if _session_recorder:
+                import hashlib as _hl
+                file_hash = _hl.md5(text.encode()).hexdigest()[:12]
+                _session_recorder.record_save(path, word_count, file_hash)
+
+            # ── Advanced detection ─────────────────────────────────────────
+            if _advanced:
+                ext = path.suffix.lower()
+                # Code detection
+                from advanced_detection import CODE_EXTENSIONS
+                if ext in CODE_EXTENSIONS:
+                    code_r = _advanced.detect_code(text, ext)
+                    log.info(f"CODE SCAN: {path.name} → {code_r['score']:.0f}% [{code_r['risk']}]")
+
+                # Rewrite detection
+                rewrite_r = _advanced.detect_rewrite(text)
+                if rewrite_r["score"] > 30:
+                    log.info(f"REWRITE DETECTED: {path.name} → {rewrite_r['score']:.0f}%")
+
+                # Multilingual
+                lang_r = _advanced.detect_multilingual(text)
+                if lang_r["language"] != "en":
+                    log.info(f"LANGUAGE: {lang_r['language_name']} — {lang_r['score']:.0f}%")
+
+                # Image scan for docx
+                if ext == '.docx':
+                    img_r = _advanced.scan_document_images(path, DATA_DIR / "temp")
+                    if img_r["ai_images"] > 0:
+                        log.info(f"AI IMAGES: {img_r['ai_images']}/{img_r['total_images']} images are AI-generated")
+
             # Base detection
             result = _detect(text)
             log.info(f"BASE SCAN: {path.name} → {result.ai_score:.0f}% [{result.risk_level}] {result.classification} | {result.llm_suspected}")
@@ -808,8 +860,35 @@ def _run_tray_win(obs):
             icon.stop()
             obs.stop()
 
+        def on_bulk_scan(icon, item):
+            import tkinter.filedialog as fd
+            folder = fd.askdirectory(title="Select folder to scan")
+            if folder and _bulk_mod:
+                _bulk_mod.show_bulk_scan_ui(
+                    Path(folder), extract_text, _detect, HISTORY_HTML)
+
+        def on_view_certificate(icon, item):
+            import tkinter.filedialog as fd
+            file = fd.askopenfilename(title="Select document",
+                filetypes=[("Documents", "*.docx *.txt *.pdf")])
+            if file and _session_recorder:
+                analysis = _session_recorder.analyze_session(Path(file))
+                cert_html = _session_recorder.generate_certificate(Path(file))
+                if cert_html:
+                    cert_path = DATA_DIR / "certificate.html"
+                    cert_path.write_text(cert_html, encoding="utf-8")
+                    webbrowser.open(cert_path.as_uri())
+                else:
+                    _show_simple_popup("AIScan",
+                        f"Not enough writing history for {Path(file).name}\n\n"
+                        f"Score: {analysis['score']:.0f}%\n"
+                        f"Saves: {analysis['save_count']}\n"
+                        f"Need at least 3 saves over 3+ minutes.")
+
         menu = pystray.Menu(
             pystray.MenuItem("View History", on_history),
+            pystray.MenuItem("Bulk Scan Folder...", on_bulk_scan),
+            pystray.MenuItem("View Certificate...", on_view_certificate),
             pystray.MenuItem("Pause / Resume", on_pause),
             pystray.MenuItem("Exit", on_exit)
         )
