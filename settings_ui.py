@@ -87,7 +87,8 @@ class SettingsManager:
 def show_settings_window(settings_manager, restart_callback=None):
     """Show the full settings window."""
     import tkinter as tk
-    from tkinter import ttk, filedialog, messagebox
+    import tkinter.ttk as ttk
+    from tkinter import filedialog, messagebox
 
     s = settings_manager.settings
     root = tk.Tk()
