@@ -1,4 +1,4 @@
-name: Build Installers
+name: Build AIScan v5 Installers
 
 on:
   workflow_dispatch:
@@ -9,65 +9,144 @@ on:
 
 jobs:
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # WINDOWS BUILD
+  # ─────────────────────────────────────────────────────────────────────────
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
-        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib pystray plyer pywin32
-      - name: Build
+        run: |
+          pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib pystray plyer pywin32 mss reportlab comtypes
+
+      - name: Verify key packages
+        run: |
+          python -c "import mss; print('mss OK')"
+          python -c "from reportlab.lib.pagesizes import A4; print('reportlab OK')"
+          python -c "import pystray; print('pystray OK')"
+          python -c "import watchdog; print('watchdog OK')"
+
+      - name: Build EXE
         run: python build_and_package.py
-      - name: Upload
+
+      - name: Verify build output
+        run: |
+          if exist dist\AIScan.exe (
+            echo Build successful
+            dir dist\AIScan.exe
+          ) else (
+            echo Build FAILED - AIScan.exe not found
+            exit 1
+          )
+        shell: cmd
+
+      - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
           name: AIScan-Windows
           path: dist/AIScan.exe
+          retention-days: 30
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # MAC — APPLE SILICON (M1/M2/M3)
+  # ─────────────────────────────────────────────────────────────────────────
   macos-apple-silicon:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
-        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib rumps plyer
-      - name: Build
-        run: python build_and_package.py
-      - name: Make DMG
         run: |
-          mkdir /tmp/dmg
-          cp -r dist/AIScan.app /tmp/dmg/
-          ln -s /Applications /tmp/dmg/Applications
-          hdiutil create -volname AIScan -srcfolder /tmp/dmg -ov -format UDZO AIScan-Mac-AppleSilicon.dmg
-      - name: Upload
+          pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib rumps plyer mss reportlab
+
+      - name: Verify key packages
+        run: |
+          python -c "import mss; print('mss OK')"
+          python -c "from reportlab.lib.pagesizes import A4; print('reportlab OK')"
+          python -c "import rumps; print('rumps OK')"
+
+      - name: Build App
+        run: python build_and_package.py
+
+      - name: Verify build output
+        run: |
+          if [ -d "dist/AIScan.app" ]; then
+            echo "Build successful"
+            du -sh dist/AIScan.app
+          else
+            echo "Build FAILED - AIScan.app not found"
+            exit 1
+          fi
+
+      - name: Create DMG
+        run: |
+          mkdir /tmp/dmg-silicon
+          cp -r dist/AIScan.app /tmp/dmg-silicon/
+          ln -s /Applications /tmp/dmg-silicon/Applications
+          hdiutil create -volname "AIScan" -srcfolder /tmp/dmg-silicon -ov -format UDZO AIScan-Mac-AppleSilicon.dmg
+
+      - name: Upload Mac Apple Silicon DMG
         uses: actions/upload-artifact@v4
         with:
           name: AIScan-Mac-AppleSilicon
           path: AIScan-Mac-AppleSilicon.dmg
+          retention-days: 30
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # MAC — INTEL (older Macs)
+  # ─────────────────────────────────────────────────────────────────────────
   macos-intel:
     runs-on: macos-13
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install dependencies
-        run: pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib rumps plyer
-      - name: Build
-        run: python build_and_package.py
-      - name: Make DMG
         run: |
-          mkdir /tmp/dmg
-          cp -r dist/AIScan.app /tmp/dmg/
-          ln -s /Applications /tmp/dmg/Applications
-          hdiutil create -volname AIScan -srcfolder /tmp/dmg -ov -format UDZO AIScan-Mac-Intel.dmg
-      - name: Upload
+          pip install pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib rumps plyer mss reportlab
+
+      - name: Verify key packages
+        run: |
+          python -c "import mss; print('mss OK')"
+          python -c "from reportlab.lib.pagesizes import A4; print('reportlab OK')"
+          python -c "import rumps; print('rumps OK')"
+
+      - name: Build App
+        run: python build_and_package.py
+
+      - name: Verify build output
+        run: |
+          if [ -d "dist/AIScan.app" ]; then
+            echo "Build successful"
+            du -sh dist/AIScan.app
+          else
+            echo "Build FAILED - AIScan.app not found"
+            exit 1
+          fi
+
+      - name: Create DMG
+        run: |
+          mkdir /tmp/dmg-intel
+          cp -r dist/AIScan.app /tmp/dmg-intel/
+          ln -s /Applications /tmp/dmg-intel/Applications
+          hdiutil create -volname "AIScan" -srcfolder /tmp/dmg-intel -ov -format UDZO AIScan-Mac-Intel.dmg
+
+      - name: Upload Mac Intel DMG
         uses: actions/upload-artifact@v4
         with:
           name: AIScan-Mac-Intel
           path: AIScan-Mac-Intel.dmg
+          retention-days: 30
