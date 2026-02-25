@@ -85,6 +85,9 @@ _bulk_mod = _load_module("bulk_scanner")
 if _bulk_mod:
     log.info("Bulk scanner loaded ✓")
 
+_screen_mod = _load_module("screen_monitor")
+_screen_monitor = None  # initialized in main()
+
 # ════════════════════════════════════════════════════════════════════════════
 # DETECTION ENGINE v2 — Smarter, per-paragraph, LLM fingerprinting
 # ════════════════════════════════════════════════════════════════════════════
@@ -850,11 +853,29 @@ def _run_tray_win(obs):
 
         def on_pause(icon, item):
             paused[0] = not paused[0]
-            if paused[0]: obs.stop()
+            if paused[0]:
+                obs.stop()
+                if _screen_monitor: _screen_monitor.pause()
+                clipboard.pause() if hasattr(clipboard, 'pause') else None
             else:
                 paths = _watch_paths()
                 obs2 = start_watcher(paths)
                 obs2.join(0)
+                if _screen_monitor: _screen_monitor.resume()
+
+        def on_toggle_screen(icon, item):
+            if _screen_monitor:
+                if _screen_monitor._paused:
+                    _screen_monitor.resume()
+                    log.info("Screen monitoring resumed")
+                else:
+                    _screen_monitor.pause()
+                    log.info("Screen monitoring paused")
+            else:
+                _show_simple_popup("AIScan",
+                    "Screen monitoring requires Tesseract OCR.\n\n"
+                    "Install from:\nhttps://github.com/UB-Mannheim/tesseract/wiki\n\n"
+                    "Then restart AIScan.")
 
         def on_exit(icon, item):
             icon.stop()
@@ -889,7 +910,8 @@ def _run_tray_win(obs):
             pystray.MenuItem("View History", on_history),
             pystray.MenuItem("Bulk Scan Folder...", on_bulk_scan),
             pystray.MenuItem("View Certificate...", on_view_certificate),
-            pystray.MenuItem("Pause / Resume", on_pause),
+            pystray.MenuItem("Toggle Screen Monitor", on_toggle_screen),
+            pystray.MenuItem("Pause / Resume All", on_pause),
             pystray.MenuItem("Exit", on_exit)
         )
         icon = pystray.Icon("AIScan", img, "AIScan — AI monitoring active", menu)
@@ -1260,6 +1282,21 @@ def main():
     # Start clipboard monitor
     clipboard = ClipboardMonitor()
     clipboard.start()
+
+    # Start screen monitor
+    global _screen_monitor
+    if _screen_mod:
+        ocr_ok, ocr_method, ocr_hint = _screen_mod.check_ocr_available()
+        if ocr_ok:
+            _screen_monitor = _screen_mod.ScreenMonitor(
+                detect_fn=_detect,
+                alert_fn=show_popup,
+                interval_seconds=4
+            )
+            _screen_monitor.start()
+            log.info(f"Screen monitor started via {ocr_method}")
+        else:
+            log.warning(f"Screen monitor disabled: {ocr_hint}")
 
     # Startup test
     threading.Thread(target=_test_scan, daemon=True).start()
