@@ -8,27 +8,36 @@ for d in ["build", "dist"]:
         print(f"  Cleared {d}/")
 for f in Path(".").glob("*.spec"):
     f.unlink()
-    print(f"  Deleted {f}")
 print("=== Cache cleared ===")
 
-print("=== Building AIScan v3 ===")
 is_windows = sys.platform == "win32"
+sep = ";" if is_windows else ":"
 
+# Bundle all companion modules
+add_data = [
+    f"intelligence.py{sep}.",
+    f"advanced_detection.py{sep}.",
+    f"session_recorder.py{sep}.",
+    f"bulk_scanner.py{sep}.",
+]
+
+print("=== Building AIScan v4 ===")
 cmd = [
     sys.executable, "-m", "PyInstaller",
     "--onefile" if is_windows else "--onedir",
     "--windowed",
     "--name", "AIScan",
-    "--add-data", f"intelligence.py{';' if is_windows else ':'}.",
-    "--hidden-import", "sklearn.ensemble._forest",
-    "--hidden-import", "watchdog.observers.polling",
-    "--hidden-import", "watchdog.observers.winapi" if is_windows else "watchdog.observers.fsevents",
     "--exclude-module", "matplotlib",
     "--exclude-module", "scipy",
     "--exclude-module", "pandas",
     "--exclude-module", "onnxruntime",
-    "agent_standalone.py",
+    "--hidden-import", "watchdog.observers.polling",
+    "--hidden-import", "watchdog.observers.winapi" if is_windows else "watchdog.observers.fsevents",
+    "--hidden-import", "sklearn.ensemble._forest",
 ]
+
+for d in add_data:
+    cmd += ["--add-data", d]
 
 if is_windows:
     cmd += [
@@ -44,5 +53,6 @@ else:
         "--osx-bundle-identifier", "com.aiscan.agent",
     ]
 
+cmd.append("agent_standalone.py")
 result = subprocess.run(cmd)
 sys.exit(result.returncode)
