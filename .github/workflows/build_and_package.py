@@ -19,7 +19,12 @@ add_data = [
     f"advanced_detection.py{sep}.",
     f"session_recorder.py{sep}.",
     f"bulk_scanner.py{sep}.",
+    f"screen_monitor.py{sep}.",
 ]
+
+# Install mss for screen capture
+import subprocess
+subprocess.run([sys.executable, "-m", "pip", "install", "mss", "--break-system-packages", "--quiet"])
 
 print("=== Building AIScan v4 ===")
 cmd = [
@@ -31,6 +36,7 @@ cmd = [
     "--exclude-module", "scipy",
     "--exclude-module", "pandas",
     "--exclude-module", "onnxruntime",
+    "--hidden-import", "mss",
     "--hidden-import", "watchdog.observers.polling",
     "--hidden-import", "watchdog.observers.winapi" if is_windows else "watchdog.observers.fsevents",
     "--hidden-import", "sklearn.ensemble._forest",
