@@ -53,6 +53,11 @@ required_files = [
     "onboarding.py",
     "report_generator.py",
     "security_mode.py",
+    "incident_engine.py",
+    "entity_tracker.py",
+    "compliance_reporter.py",
+    "benchmark.py",
+    "network_monitor.py",
     "license.py",
 ]
 missing = [f for f in required_files if not Path(f).exists()]
@@ -91,6 +96,11 @@ companion_modules = [
     "onboarding",
     "report_generator",
     "security_mode",
+    "incident_engine",
+    "entity_tracker",
+    "compliance_reporter",
+    "benchmark",
+    "network_monitor",
 ]
 print(f"Bundling {len(companion_modules)} companion modules...")
 
