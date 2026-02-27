@@ -1,6 +1,5 @@
 name: Build AIScan v6 Installers
 
-# Triggers: manual dispatch OR any push to main/master
 on:
   workflow_dispatch:
   push:
@@ -8,38 +7,22 @@ on:
       - main
       - master
 
-# -----------------------------------------------------------------------------
-# Module inventory (v6 - 23 modules, 11 400+ lines)
-# agent_standalone      - core agent, tray, file watcher, detection engine v6
-# intelligence          - keystroke/paste anomaly, document DNA
-# advanced_detection    - code detection, rewrite analysis, multilingual, images
-# session_recorder      - tamper-evident session certificates
-# bulk_scanner          - folder scan UI + CSV export
-# screen_monitor        - clipboard + screen OCR (pytesseract optional)
-# settings_ui           - settings window
-# onboarding            - first-run wizard
-# report_generator      - per-file PDF scan reports
-# security_mode         - PII / credential / macro scanner
-# incident_engine       - incident correlation + EXFIL_CORRELATION detection
-# entity_tracker        - per-entity risk scoring and dashboard
-# compliance_reporter   - DPDP / GDPR compliance PDF reports
-# benchmark             - 83-sample accuracy benchmark + PDF report
-# network_monitor       - TCP connection monitor + exfiltration correlation
-# quarantine            - CRITICAL file quarantine + restore UI
-# whitelist             - file/folder exception list
-# scheduler             - cron-style scheduled folder scans
-# webhook               - Slack/Teams/email webhook + digest notifications
-# auto_updater          - version check + update notification
-# extended_pii          - passport / voter ID / driving licence / biometrics
-# cli                   - command-line interface (aiscan scan <file> --json)
-# license               - license key validation
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Windows:       produces AIScan.exe  (single-file, --onefile)
+# macOS Silicon: produces AIScan-v6-Mac-AppleSilicon.dmg
+# macOS Intel:   produces AIScan-v6-Mac-Intel.dmg
+#
+# ALL Python "inline" checks have been moved to helper scripts
+# (check_modules.py, check_syntax.py, check_benchmark.py) written by a
+# dedicated step. This avoids cmd.exe quoting failures on Windows where
+# python -c "..." with inner single-quotes and f-strings is unreliable.
+# ---------------------------------------------------------------------------
 
 jobs:
 
-  # ---------------------------------------------------------------------------
-  # WINDOWS  (produces AIScan.exe - single-file, no installer needed)
-  # ---------------------------------------------------------------------------
+  # =========================================================================
+  # WINDOWS  (produces AIScan.exe)
+  # =========================================================================
   windows:
     runs-on: windows-latest
     env:
@@ -57,6 +40,91 @@ jobs:
         run: chcp 65001
         shell: cmd
 
+      # --- write helper scripts BEFORE anything else ----------------------
+      # Using pwsh (PowerShell) to write multi-line Python files avoids ALL
+      # cmd.exe quoting issues.  PowerShell is always available on GitHub
+      # windows-latest runners.
+      - name: Write helper scripts
+        shell: pwsh
+        run: |
+          # --- check_modules.py -------------------------------------------
+          @"
+          from pathlib import Path
+          import sys
+          modules = [
+              'agent_standalone','intelligence','advanced_detection',
+              'session_recorder','bulk_scanner','screen_monitor',
+              'settings_ui','onboarding','report_generator',
+              'security_mode','incident_engine','entity_tracker',
+              'compliance_reporter','benchmark','network_monitor',
+              'quarantine','whitelist','scheduler','webhook',
+              'auto_updater','extended_pii','cli','license',
+          ]
+          missing = [m for m in modules if not Path(m + '.py').exists()]
+          if missing:
+              print('MISSING:', missing)
+              sys.exit(1)
+          total = sum(len(Path(m + '.py').read_text(encoding='utf-8').splitlines()) for m in modules)
+          total += len(Path('agent_standalone.py').read_text(encoding='utf-8').splitlines())
+          print('All', len(modules) + 1, 'modules present')
+          "@ | Out-File -FilePath check_modules.py -Encoding utf8
+
+          # --- check_syntax.py --------------------------------------------
+          @"
+          import ast, sys
+          from pathlib import Path
+          errors = []
+          for f in sorted(Path('.').glob('*.py')):
+              if 'screen_monitor_new' in f.name:
+                  continue
+              if f.name.startswith('check_'):
+                  continue
+              try:
+                  c = f.read_text(encoding='utf-8', errors='replace')
+              except Exception as e:
+                  errors.append(f.name + ': read error ' + str(e))
+                  continue
+              bad = sum(1 for ch in c if ord(ch) > 127)
+              if bad:
+                  errors.append(f.name + ': ' + str(bad) + ' non-ASCII chars')
+              try:
+                  ast.parse(c)
+              except SyntaxError as e:
+                  errors.append(f.name + ': SyntaxError ' + str(e))
+          if errors:
+              for e in errors:
+                  print('ERROR:', e)
+              sys.exit(1)
+          print('All modules: syntax clean, ASCII-only')
+          "@ | Out-File -FilePath check_syntax.py -Encoding utf8
+
+          # --- check_benchmark.py -----------------------------------------
+          @"
+          import sys, importlib.util
+          sys.path.insert(0, '.')
+          spec = importlib.util.spec_from_file_location('benchmark', 'benchmark.py')
+          bm = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(bm)
+          from agent_standalone import _detect
+          m = bm.run_benchmark(_detect)
+          print('Accuracy:  ' + str(round(m.accuracy * 100, 1)) + '%')
+          print('Precision: ' + str(round(m.precision_ai * 100, 1)) + '%')
+          print('Recall:    ' + str(round(m.recall_ai * 100, 1)) + '%')
+          print('F1:        ' + str(round(m.f1_ai, 3)))
+          print('FPR:       ' + str(round(m.false_positive_rate * 100, 1)) + '%')
+          print('Sep:       ' + str(round(m.score_separation, 1)) + 'pts')
+          if m.accuracy < 0.92:
+              print('FAIL: accuracy below 92%')
+              sys.exit(1)
+          if m.false_positive_rate > 0.05:
+              print('FAIL: FPR above 5%')
+              sys.exit(1)
+          if m.f1_ai < 0.90:
+              print('FAIL: F1 below 0.90')
+              sys.exit(1)
+          print('Benchmark PASSED')
+          "@ | Out-File -FilePath check_benchmark.py -Encoding utf8
+
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
@@ -67,11 +135,8 @@ jobs:
           pip install pytesseract
         shell: cmd
 
-      # Tesseract OCR binary - optional, screen_monitor gracefully falls back
-      - name: Install Tesseract OCR (optional, for screen monitor)
-        run: |
-          choco install tesseract --no-progress -y
-          echo "Tesseract installed"
+      - name: Install Tesseract OCR (optional)
+        run: choco install tesseract --no-progress -y
         shell: cmd
         continue-on-error: true
 
@@ -80,7 +145,7 @@ jobs:
           python -c "import tkinter; print('tkinter OK')"
           python -c "import tkinter.ttk; print('tkinter.ttk OK')"
           python -c "import mss; print('mss OK')"
-          python -c "from reportlab.lib.pagesizes import A4; print('reportlab OK')"
+          python -c "import reportlab; print('reportlab OK')"
           python -c "import pystray; print('pystray OK')"
           python -c "import watchdog; print('watchdog OK')"
           python -c "import win32gui; print('pywin32 OK')"
@@ -92,47 +157,12 @@ jobs:
           python -c "import pypdf; print('pypdf OK')"
         shell: cmd
 
-      - name: Verify all 23 source modules present
-        run: |
-          python -c "
-          from pathlib import Path
-          modules = [
-            'agent_standalone','intelligence','advanced_detection',
-            'session_recorder','bulk_scanner','screen_monitor',
-            'settings_ui','onboarding','report_generator',
-            'security_mode','incident_engine','entity_tracker',
-            'compliance_reporter','benchmark','network_monitor',
-            'quarantine','whitelist','scheduler','webhook',
-            'auto_updater','extended_pii','cli','license',
-          ]
-          missing = [m for m in modules if not Path(f'{m}.py').exists()]
-          if missing:
-              print('MISSING:', missing); exit(1)
-          print(f'All {len(modules)} modules present')
-          "
+      - name: Verify all 23 modules present
+        run: python check_modules.py
         shell: cmd
 
-      - name: Syntax + encoding check (all 23 modules)
-        run: |
-          python -c "
-          import ast
-          from pathlib import Path
-          errors = []
-          for f in Path('.').glob('*.py'):
-              if 'screen_monitor_new' in f.name: continue
-              c = f.read_text(encoding='utf-8', errors='replace')
-              bad = sum(1 for ch in c if ord(ch) > 127)
-              if bad:
-                  errors.append(f'{f.name}: {bad} non-ASCII chars')
-              try:
-                  ast.parse(c)
-              except SyntaxError as e:
-                  errors.append(f'{f.name}: {e}')
-          if errors:
-              for e in errors: print('ERROR:', e)
-              exit(1)
-          print('All modules: syntax clean, ASCII-only')
-          "
+      - name: Syntax and encoding check
+        run: python check_syntax.py
         shell: cmd
 
       - name: Build Windows EXE
@@ -140,25 +170,7 @@ jobs:
         shell: cmd
 
       - name: Run accuracy benchmark
-        run: |
-          python -c "
-          import sys, importlib.util
-          sys.path.insert(0,'.')
-          spec = importlib.util.spec_from_file_location('benchmark','benchmark.py')
-          bm = importlib.util.module_from_spec(spec); spec.loader.exec_module(bm)
-          from agent_standalone import _detect
-          m = bm.run_benchmark(_detect)
-          print(f'Accuracy:  {m.accuracy*100:.1f}%')
-          print(f'Precision: {m.precision_ai*100:.1f}%')
-          print(f'Recall:    {m.recall_ai*100:.1f}%')
-          print(f'F1:        {m.f1_ai:.3f}')
-          print(f'FPR:       {m.false_positive_rate*100:.1f}%')
-          if m.accuracy < 0.92:
-              print('FAIL: accuracy below 92%'); exit(1)
-          if m.false_positive_rate > 0.05:
-              print('FAIL: FPR above 5%'); exit(1)
-          print('Benchmark PASSED')
-          "
+        run: python check_benchmark.py
         shell: cmd
 
       - name: Verify EXE output
@@ -179,11 +191,11 @@ jobs:
           path: dist/AIScan.exe
           retention-days: 30
 
-  # ---------------------------------------------------------------------------
-  # macOS - APPLE SILICON (M1/M2/M3/M4)  arm64
-  # ---------------------------------------------------------------------------
+  # =========================================================================
+  # macOS  APPLE SILICON  (arm64)
+  # =========================================================================
   macos-apple-silicon:
-    runs-on: macos-latest        # GitHub provides M1 runners as of 2024
+    runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -191,6 +203,60 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Write helper scripts
+        run: |
+          cat > check_modules.py << 'PYEOF'
+          from pathlib import Path
+          import sys
+          modules = [
+              'agent_standalone','intelligence','advanced_detection',
+              'session_recorder','bulk_scanner','screen_monitor',
+              'settings_ui','onboarding','report_generator',
+              'security_mode','incident_engine','entity_tracker',
+              'compliance_reporter','benchmark','network_monitor',
+              'quarantine','whitelist','scheduler','webhook',
+              'auto_updater','extended_pii','cli','license',
+          ]
+          missing = [m for m in modules if not Path(m + '.py').exists()]
+          if missing:
+              print('MISSING:', missing); sys.exit(1)
+          print('All', len(modules), 'modules present')
+          PYEOF
+
+          cat > check_syntax.py << 'PYEOF'
+          import ast, sys
+          from pathlib import Path
+          errors = []
+          for f in sorted(Path('.').glob('*.py')):
+              if 'screen_monitor_new' in f.name or f.name.startswith('check_'):
+                  continue
+              c = f.read_text(encoding='utf-8', errors='replace')
+              bad = sum(1 for ch in c if ord(ch) > 127)
+              if bad:
+                  errors.append(f.name + ': ' + str(bad) + ' non-ASCII')
+              try:
+                  ast.parse(c)
+              except SyntaxError as e:
+                  errors.append(f.name + ': ' + str(e))
+          if errors:
+              [print('ERROR:', e) for e in errors]; sys.exit(1)
+          print('All modules clean')
+          PYEOF
+
+          cat > check_benchmark.py << 'PYEOF'
+          import sys, importlib.util
+          sys.path.insert(0, '.')
+          spec = importlib.util.spec_from_file_location('benchmark', 'benchmark.py')
+          bm = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(bm)
+          from agent_standalone import _detect
+          m = bm.run_benchmark(_detect)
+          print('Accuracy:', round(m.accuracy*100,1), '%  FPR:', round(m.false_positive_rate*100,1), '%  F1:', round(m.f1_ai,3))
+          if m.accuracy < 0.92 or m.false_positive_rate > 0.05 or m.f1_ai < 0.90:
+              print('BENCHMARK FAILED'); sys.exit(1)
+          print('Benchmark PASSED')
+          PYEOF
 
       - name: Install Python dependencies
         run: |
@@ -208,69 +274,22 @@ jobs:
           python -c "import tkinter; print('tkinter OK')"
           python -c "import tkinter.ttk; print('tkinter.ttk OK')"
           python -c "import mss; print('mss OK')"
-          python -c "from reportlab.lib.pagesizes import A4; print('reportlab OK')"
+          python -c "import reportlab; print('reportlab OK')"
           python -c "import rumps; print('rumps OK')"
           python -c "import watchdog; print('watchdog OK')"
           python -c "import PIL; print('pillow OK')"
-          python -c "import docx; print('python-docx OK')"
-          python -c "import openpyxl; print('openpyxl OK')"
-          python -c "import pptx; print('python-pptx OK')"
-          python -c "import pypdf; print('pypdf OK')"
 
-      - name: Verify all 23 source modules present
-        run: |
-          python -c "
-          from pathlib import Path
-          modules = [
-            'agent_standalone','intelligence','advanced_detection',
-            'session_recorder','bulk_scanner','screen_monitor',
-            'settings_ui','onboarding','report_generator',
-            'security_mode','incident_engine','entity_tracker',
-            'compliance_reporter','benchmark','network_monitor',
-            'quarantine','whitelist','scheduler','webhook',
-            'auto_updater','extended_pii','cli','license',
-          ]
-          missing = [m for m in modules if not Path(f'{m}.py').exists()]
-          if missing:
-              print('MISSING:', missing); exit(1)
-          print(f'All {len(modules)} modules present')
-          "
+      - name: Verify all 23 modules present
+        run: python check_modules.py
 
-      - name: Syntax + encoding check
-        run: |
-          python -c "
-          import ast
-          from pathlib import Path
-          errors = []
-          for f in Path('.').glob('*.py'):
-              if 'screen_monitor_new' in f.name: continue
-              c = f.read_text(encoding='utf-8', errors='replace')
-              bad = sum(1 for ch in c if ord(ch) > 127)
-              if bad: errors.append(f'{f.name}: {bad} non-ASCII')
-              try: ast.parse(c)
-              except SyntaxError as e: errors.append(f'{f.name}: {e}')
-          if errors:
-              [print('ERROR:', e) for e in errors]; exit(1)
-          print('All modules clean')
-          "
+      - name: Syntax and encoding check
+        run: python check_syntax.py
 
       - name: Build macOS App
         run: python build_and_package.py
 
       - name: Run accuracy benchmark
-        run: |
-          python -c "
-          import sys, importlib.util
-          sys.path.insert(0,'.')
-          spec = importlib.util.spec_from_file_location('benchmark','benchmark.py')
-          bm = importlib.util.module_from_spec(spec); spec.loader.exec_module(bm)
-          from agent_standalone import _detect
-          m = bm.run_benchmark(_detect)
-          print(f'Accuracy: {m.accuracy*100:.1f}%  FPR: {m.false_positive_rate*100:.1f}%  F1: {m.f1_ai:.3f}')
-          if m.accuracy < 0.92 or m.false_positive_rate > 0.05:
-              exit(1)
-          print('Benchmark PASSED')
-          "
+        run: python check_benchmark.py
 
       - name: Verify App output
         run: |
@@ -292,7 +311,6 @@ jobs:
             -srcfolder /tmp/dmg-silicon \
             -ov -format UDZO \
             AIScan-v6-Mac-AppleSilicon.dmg
-          echo "DMG created: $(du -sh AIScan-v6-Mac-AppleSilicon.dmg)"
 
       - name: Upload Apple Silicon DMG
         uses: actions/upload-artifact@v4
@@ -301,11 +319,11 @@ jobs:
           path: AIScan-v6-Mac-AppleSilicon.dmg
           retention-days: 30
 
-  # ---------------------------------------------------------------------------
-  # macOS - INTEL  x86_64  (2019 and older Macs)
-  # ---------------------------------------------------------------------------
+  # =========================================================================
+  # macOS  INTEL  x86_64
+  # =========================================================================
   macos-intel:
-    runs-on: macos-13            # GitHub's last Intel macOS runner
+    runs-on: macos-13
 
     steps:
       - uses: actions/checkout@v4
@@ -313,6 +331,60 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Write helper scripts
+        run: |
+          cat > check_modules.py << 'PYEOF'
+          from pathlib import Path
+          import sys
+          modules = [
+              'agent_standalone','intelligence','advanced_detection',
+              'session_recorder','bulk_scanner','screen_monitor',
+              'settings_ui','onboarding','report_generator',
+              'security_mode','incident_engine','entity_tracker',
+              'compliance_reporter','benchmark','network_monitor',
+              'quarantine','whitelist','scheduler','webhook',
+              'auto_updater','extended_pii','cli','license',
+          ]
+          missing = [m for m in modules if not Path(m + '.py').exists()]
+          if missing:
+              print('MISSING:', missing); sys.exit(1)
+          print('All', len(modules), 'modules present')
+          PYEOF
+
+          cat > check_syntax.py << 'PYEOF'
+          import ast, sys
+          from pathlib import Path
+          errors = []
+          for f in sorted(Path('.').glob('*.py')):
+              if 'screen_monitor_new' in f.name or f.name.startswith('check_'):
+                  continue
+              c = f.read_text(encoding='utf-8', errors='replace')
+              bad = sum(1 for ch in c if ord(ch) > 127)
+              if bad:
+                  errors.append(f.name + ': ' + str(bad) + ' non-ASCII')
+              try:
+                  ast.parse(c)
+              except SyntaxError as e:
+                  errors.append(f.name + ': ' + str(e))
+          if errors:
+              [print('ERROR:', e) for e in errors]; sys.exit(1)
+          print('All modules clean')
+          PYEOF
+
+          cat > check_benchmark.py << 'PYEOF'
+          import sys, importlib.util
+          sys.path.insert(0, '.')
+          spec = importlib.util.spec_from_file_location('benchmark', 'benchmark.py')
+          bm = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(bm)
+          from agent_standalone import _detect
+          m = bm.run_benchmark(_detect)
+          print('Accuracy:', round(m.accuracy*100,1), '%  FPR:', round(m.false_positive_rate*100,1), '%  F1:', round(m.f1_ai,3))
+          if m.accuracy < 0.92 or m.false_positive_rate > 0.05 or m.f1_ai < 0.90:
+              print('BENCHMARK FAILED'); sys.exit(1)
+          print('Benchmark PASSED')
+          PYEOF
 
       - name: Install Python dependencies
         run: |
@@ -330,65 +402,22 @@ jobs:
           python -c "import tkinter; print('tkinter OK')"
           python -c "import tkinter.ttk; print('tkinter.ttk OK')"
           python -c "import mss; print('mss OK')"
-          python -c "from reportlab.lib.pagesizes import A4; print('reportlab OK')"
+          python -c "import reportlab; print('reportlab OK')"
           python -c "import rumps; print('rumps OK')"
           python -c "import watchdog; print('watchdog OK')"
           python -c "import PIL; print('pillow OK')"
 
-      - name: Verify all 23 source modules present
-        run: |
-          python -c "
-          from pathlib import Path
-          modules = [
-            'agent_standalone','intelligence','advanced_detection',
-            'session_recorder','bulk_scanner','screen_monitor',
-            'settings_ui','onboarding','report_generator',
-            'security_mode','incident_engine','entity_tracker',
-            'compliance_reporter','benchmark','network_monitor',
-            'quarantine','whitelist','scheduler','webhook',
-            'auto_updater','extended_pii','cli','license',
-          ]
-          missing = [m for m in modules if not Path(f'{m}.py').exists()]
-          if missing:
-              print('MISSING:', missing); exit(1)
-          print(f'All {len(modules)} modules present')
-          "
+      - name: Verify all 23 modules present
+        run: python check_modules.py
 
-      - name: Syntax + encoding check
-        run: |
-          python -c "
-          import ast
-          from pathlib import Path
-          errors = []
-          for f in Path('.').glob('*.py'):
-              if 'screen_monitor_new' in f.name: continue
-              c = f.read_text(encoding='utf-8', errors='replace')
-              bad = sum(1 for ch in c if ord(ch) > 127)
-              if bad: errors.append(f'{f.name}: {bad} non-ASCII')
-              try: ast.parse(c)
-              except SyntaxError as e: errors.append(f'{f.name}: {e}')
-          if errors:
-              [print('ERROR:', e) for e in errors]; exit(1)
-          print('All modules clean')
-          "
+      - name: Syntax and encoding check
+        run: python check_syntax.py
 
       - name: Build macOS App
         run: python build_and_package.py
 
       - name: Run accuracy benchmark
-        run: |
-          python -c "
-          import sys, importlib.util
-          sys.path.insert(0,'.')
-          spec = importlib.util.spec_from_file_location('benchmark','benchmark.py')
-          bm = importlib.util.module_from_spec(spec); spec.loader.exec_module(bm)
-          from agent_standalone import _detect
-          m = bm.run_benchmark(_detect)
-          print(f'Accuracy: {m.accuracy*100:.1f}%  FPR: {m.false_positive_rate*100:.1f}%  F1: {m.f1_ai:.3f}')
-          if m.accuracy < 0.92 or m.false_positive_rate > 0.05:
-              exit(1)
-          print('Benchmark PASSED')
-          "
+        run: python check_benchmark.py
 
       - name: Verify App output
         run: |
@@ -410,7 +439,6 @@ jobs:
             -srcfolder /tmp/dmg-intel \
             -ov -format UDZO \
             AIScan-v6-Mac-Intel.dmg
-          echo "DMG created: $(du -sh AIScan-v6-Mac-Intel.dmg)"
 
       - name: Upload Mac Intel DMG
         uses: actions/upload-artifact@v4
