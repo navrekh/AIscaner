@@ -52,6 +52,12 @@ required_files = [
     "settings_ui.py",
     "onboarding.py",
     "report_generator.py",
+    "security_mode.py",
+    "incident_engine.py",
+    "entity_tracker.py",
+    "compliance_reporter.py",
+    "benchmark.py",
+    "network_monitor.py",
     "license.py",
 ]
 missing = [f for f in required_files if not Path(f).exists()]
@@ -89,6 +95,12 @@ companion_modules = [
     "settings_ui",
     "onboarding",
     "report_generator",
+    "security_mode",
+    "incident_engine",
+    "entity_tracker",
+    "compliance_reporter",
+    "benchmark",
+    "network_monitor",
 ]
 print(f"Bundling {len(companion_modules)} companion modules...")
 
@@ -131,6 +143,10 @@ cmd = [
     "--hidden-import", "PIL.ImageDraw",
     "--hidden-import", "PIL.ImageFont",
     "--collect-submodules", "PIL",
+
+    # Hidden imports - security mode (zipfile is stdlib but needs explicit include)
+    "--hidden-import", "zipfile",
+    "--hidden-import", "re",
 
     # Hidden imports - PDF reports
     "--hidden-import", "reportlab",
