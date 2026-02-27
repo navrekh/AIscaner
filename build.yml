@@ -1,5 +1,6 @@
-name: Build AIScan v5 Installers
+name: Build AIScan v6 Installers
 
+# Triggers: manual dispatch OR any push to main/master
 on:
   workflow_dispatch:
   push:
@@ -7,16 +8,43 @@ on:
       - main
       - master
 
+# -----------------------------------------------------------------------------
+# Module inventory (v6 - 23 modules, 11 400+ lines)
+# agent_standalone      - core agent, tray, file watcher, detection engine v6
+# intelligence          - keystroke/paste anomaly, document DNA
+# advanced_detection    - code detection, rewrite analysis, multilingual, images
+# session_recorder      - tamper-evident session certificates
+# bulk_scanner          - folder scan UI + CSV export
+# screen_monitor        - clipboard + screen OCR (pytesseract optional)
+# settings_ui           - settings window
+# onboarding            - first-run wizard
+# report_generator      - per-file PDF scan reports
+# security_mode         - PII / credential / macro scanner
+# incident_engine       - incident correlation + EXFIL_CORRELATION detection
+# entity_tracker        - per-entity risk scoring and dashboard
+# compliance_reporter   - DPDP / GDPR compliance PDF reports
+# benchmark             - 83-sample accuracy benchmark + PDF report
+# network_monitor       - TCP connection monitor + exfiltration correlation
+# quarantine            - CRITICAL file quarantine + restore UI
+# whitelist             - file/folder exception list
+# scheduler             - cron-style scheduled folder scans
+# webhook               - Slack/Teams/email webhook + digest notifications
+# auto_updater          - version check + update notification
+# extended_pii          - passport / voter ID / driving licence / biometrics
+# cli                   - command-line interface (aiscan scan <file> --json)
+# license               - license key validation
+# -----------------------------------------------------------------------------
+
 jobs:
 
-  # -------------------------------------------------------------------------
-  # WINDOWS BUILD
-  # -------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # WINDOWS  (produces AIScan.exe - single-file, no installer needed)
+  # ---------------------------------------------------------------------------
   windows:
     runs-on: windows-latest
     env:
       PYTHONIOENCODING: utf-8
-      PYTHONUTF8: 1
+      PYTHONUTF8: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -29,34 +57,118 @@ jobs:
         run: chcp 65001
         shell: cmd
 
-      - name: Install dependencies
-        run: pip install --upgrade pip pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib pystray plyer pywin32 mss reportlab comtypes
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyinstaller==6.10.0
+          pip install pillow watchdog python-docx openpyxl python-pptx pypdf
+          pip install pystray plyer pywin32 comtypes
+          pip install mss reportlab
+          pip install pytesseract
         shell: cmd
 
-      - name: Verify all packages
+      # Tesseract OCR binary - optional, screen_monitor gracefully falls back
+      - name: Install Tesseract OCR (optional, for screen monitor)
         run: |
+          choco install tesseract --no-progress -y
+          echo "Tesseract installed"
+        shell: cmd
+        continue-on-error: true
+
+      - name: Verify critical packages
+        run: |
+          python -c "import tkinter; print('tkinter OK')"
+          python -c "import tkinter.ttk; print('tkinter.ttk OK')"
           python -c "import mss; print('mss OK')"
           python -c "from reportlab.lib.pagesizes import A4; print('reportlab OK')"
           python -c "import pystray; print('pystray OK')"
           python -c "import watchdog; print('watchdog OK')"
-          python -c "import tkinter; print('tkinter OK')"
-          python -c "import tkinter.ttk; print('tkinter.ttk OK')"
-          python -c "import comtypes; print('comtypes OK')"
           python -c "import win32gui; print('pywin32 OK')"
+          python -c "import comtypes; print('comtypes OK')"
+          python -c "import PIL; print('pillow OK')"
+          python -c "import docx; print('python-docx OK')"
+          python -c "import openpyxl; print('openpyxl OK')"
+          python -c "import pptx; print('python-pptx OK')"
+          python -c "import pypdf; print('pypdf OK')"
         shell: cmd
 
-      - name: Build EXE
+      - name: Verify all 23 source modules present
+        run: |
+          python -c "
+          from pathlib import Path
+          modules = [
+            'agent_standalone','intelligence','advanced_detection',
+            'session_recorder','bulk_scanner','screen_monitor',
+            'settings_ui','onboarding','report_generator',
+            'security_mode','incident_engine','entity_tracker',
+            'compliance_reporter','benchmark','network_monitor',
+            'quarantine','whitelist','scheduler','webhook',
+            'auto_updater','extended_pii','cli','license',
+          ]
+          missing = [m for m in modules if not Path(f'{m}.py').exists()]
+          if missing:
+              print('MISSING:', missing); exit(1)
+          print(f'All {len(modules)} modules present')
+          "
+        shell: cmd
+
+      - name: Syntax + encoding check (all 23 modules)
+        run: |
+          python -c "
+          import ast
+          from pathlib import Path
+          errors = []
+          for f in Path('.').glob('*.py'):
+              if 'screen_monitor_new' in f.name: continue
+              c = f.read_text(encoding='utf-8', errors='replace')
+              bad = sum(1 for ch in c if ord(ch) > 127)
+              if bad:
+                  errors.append(f'{f.name}: {bad} non-ASCII chars')
+              try:
+                  ast.parse(c)
+              except SyntaxError as e:
+                  errors.append(f'{f.name}: {e}')
+          if errors:
+              for e in errors: print('ERROR:', e)
+              exit(1)
+          print('All modules: syntax clean, ASCII-only')
+          "
+        shell: cmd
+
+      - name: Build Windows EXE
         run: python build_and_package.py
         shell: cmd
 
-      - name: Verify build output
+      - name: Run accuracy benchmark
+        run: |
+          python -c "
+          import sys, importlib.util
+          sys.path.insert(0,'.')
+          spec = importlib.util.spec_from_file_location('benchmark','benchmark.py')
+          bm = importlib.util.module_from_spec(spec); spec.loader.exec_module(bm)
+          from agent_standalone import _detect
+          m = bm.run_benchmark(_detect)
+          print(f'Accuracy:  {m.accuracy*100:.1f}%')
+          print(f'Precision: {m.precision_ai*100:.1f}%')
+          print(f'Recall:    {m.recall_ai*100:.1f}%')
+          print(f'F1:        {m.f1_ai:.3f}')
+          print(f'FPR:       {m.false_positive_rate*100:.1f}%')
+          if m.accuracy < 0.92:
+              print('FAIL: accuracy below 92%'); exit(1)
+          if m.false_positive_rate > 0.05:
+              print('FAIL: FPR above 5%'); exit(1)
+          print('Benchmark PASSED')
+          "
+        shell: cmd
+
+      - name: Verify EXE output
         run: |
           if exist dist\AIScan.exe (
             echo Build successful
             dir dist\AIScan.exe
           ) else (
-            echo Build FAILED - AIScan.exe not found
-            exit 1
+            echo FAIL - AIScan.exe not found
+            exit /b 1
           )
         shell: cmd
 
@@ -67,11 +179,11 @@ jobs:
           path: dist/AIScan.exe
           retention-days: 30
 
-  # -------------------------------------------------------------------------
-  # MAC - APPLE SILICON (M1/M2/M3)
-  # -------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # macOS - APPLE SILICON (M1/M2/M3/M4)  arm64
+  # ---------------------------------------------------------------------------
   macos-apple-silicon:
-    runs-on: macos-latest
+    runs-on: macos-latest        # GitHub provides M1 runners as of 2024
 
     steps:
       - uses: actions/checkout@v4
@@ -80,50 +192,120 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: pip install --upgrade pip pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib rumps plyer mss reportlab
-
-      - name: Verify all packages
+      - name: Install Python dependencies
         run: |
+          pip install --upgrade pip
+          pip install pyinstaller==6.10.0
+          pip install pillow watchdog python-docx openpyxl python-pptx pypdf
+          pip install rumps plyer mss reportlab
+          pip install pytesseract
+
+      - name: Install Tesseract OCR (optional)
+        run: brew install tesseract || true
+
+      - name: Verify critical packages
+        run: |
+          python -c "import tkinter; print('tkinter OK')"
+          python -c "import tkinter.ttk; print('tkinter.ttk OK')"
           python -c "import mss; print('mss OK')"
           python -c "from reportlab.lib.pagesizes import A4; print('reportlab OK')"
           python -c "import rumps; print('rumps OK')"
-          python -c "import tkinter; print('tkinter OK')"
-          python -c "import tkinter.ttk; print('tkinter.ttk OK')"
           python -c "import watchdog; print('watchdog OK')"
+          python -c "import PIL; print('pillow OK')"
+          python -c "import docx; print('python-docx OK')"
+          python -c "import openpyxl; print('openpyxl OK')"
+          python -c "import pptx; print('python-pptx OK')"
+          python -c "import pypdf; print('pypdf OK')"
 
-      - name: Build App
+      - name: Verify all 23 source modules present
+        run: |
+          python -c "
+          from pathlib import Path
+          modules = [
+            'agent_standalone','intelligence','advanced_detection',
+            'session_recorder','bulk_scanner','screen_monitor',
+            'settings_ui','onboarding','report_generator',
+            'security_mode','incident_engine','entity_tracker',
+            'compliance_reporter','benchmark','network_monitor',
+            'quarantine','whitelist','scheduler','webhook',
+            'auto_updater','extended_pii','cli','license',
+          ]
+          missing = [m for m in modules if not Path(f'{m}.py').exists()]
+          if missing:
+              print('MISSING:', missing); exit(1)
+          print(f'All {len(modules)} modules present')
+          "
+
+      - name: Syntax + encoding check
+        run: |
+          python -c "
+          import ast
+          from pathlib import Path
+          errors = []
+          for f in Path('.').glob('*.py'):
+              if 'screen_monitor_new' in f.name: continue
+              c = f.read_text(encoding='utf-8', errors='replace')
+              bad = sum(1 for ch in c if ord(ch) > 127)
+              if bad: errors.append(f'{f.name}: {bad} non-ASCII')
+              try: ast.parse(c)
+              except SyntaxError as e: errors.append(f'{f.name}: {e}')
+          if errors:
+              [print('ERROR:', e) for e in errors]; exit(1)
+          print('All modules clean')
+          "
+
+      - name: Build macOS App
         run: python build_and_package.py
 
-      - name: Verify build output
+      - name: Run accuracy benchmark
+        run: |
+          python -c "
+          import sys, importlib.util
+          sys.path.insert(0,'.')
+          spec = importlib.util.spec_from_file_location('benchmark','benchmark.py')
+          bm = importlib.util.module_from_spec(spec); spec.loader.exec_module(bm)
+          from agent_standalone import _detect
+          m = bm.run_benchmark(_detect)
+          print(f'Accuracy: {m.accuracy*100:.1f}%  FPR: {m.false_positive_rate*100:.1f}%  F1: {m.f1_ai:.3f}')
+          if m.accuracy < 0.92 or m.false_positive_rate > 0.05:
+              exit(1)
+          print('Benchmark PASSED')
+          "
+
+      - name: Verify App output
         run: |
           if [ -d "dist/AIScan.app" ]; then
             echo "Build successful"
             du -sh dist/AIScan.app
           else
-            echo "Build FAILED - AIScan.app not found"
+            echo "FAIL - AIScan.app not found"
             exit 1
           fi
 
-      - name: Create DMG
+      - name: Create DMG (Apple Silicon)
         run: |
           mkdir /tmp/dmg-silicon
           cp -r dist/AIScan.app /tmp/dmg-silicon/
           ln -s /Applications /tmp/dmg-silicon/Applications
-          hdiutil create -volname "AIScan" -srcfolder /tmp/dmg-silicon -ov -format UDZO AIScan-Mac-AppleSilicon.dmg
+          hdiutil create \
+            -volname "AIScan v6" \
+            -srcfolder /tmp/dmg-silicon \
+            -ov -format UDZO \
+            AIScan-v6-Mac-AppleSilicon.dmg
+          echo "DMG created: $(du -sh AIScan-v6-Mac-AppleSilicon.dmg)"
 
-      - name: Upload Mac Apple Silicon DMG
+      - name: Upload Apple Silicon DMG
         uses: actions/upload-artifact@v4
         with:
           name: AIScan-Mac-AppleSilicon
-          path: AIScan-Mac-AppleSilicon.dmg
+          path: AIScan-v6-Mac-AppleSilicon.dmg
           retention-days: 30
 
-  # -------------------------------------------------------------------------
-  # MAC - INTEL (older Macs)
-  # -------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # macOS - INTEL  x86_64  (2019 and older Macs)
+  # ---------------------------------------------------------------------------
   macos-intel:
-    runs-on: macos-13
+    runs-on: macos-13            # GitHub's last Intel macOS runner
 
     steps:
       - uses: actions/checkout@v4
@@ -132,41 +314,107 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: pip install --upgrade pip pyinstaller pillow watchdog python-docx openpyxl python-pptx pypdf scikit-learn joblib rumps plyer mss reportlab
-
-      - name: Verify all packages
+      - name: Install Python dependencies
         run: |
+          pip install --upgrade pip
+          pip install pyinstaller==6.10.0
+          pip install pillow watchdog python-docx openpyxl python-pptx pypdf
+          pip install rumps plyer mss reportlab
+          pip install pytesseract
+
+      - name: Install Tesseract OCR (optional)
+        run: brew install tesseract || true
+
+      - name: Verify critical packages
+        run: |
+          python -c "import tkinter; print('tkinter OK')"
+          python -c "import tkinter.ttk; print('tkinter.ttk OK')"
           python -c "import mss; print('mss OK')"
           python -c "from reportlab.lib.pagesizes import A4; print('reportlab OK')"
           python -c "import rumps; print('rumps OK')"
-          python -c "import tkinter; print('tkinter OK')"
-          python -c "import tkinter.ttk; print('tkinter.ttk OK')"
           python -c "import watchdog; print('watchdog OK')"
+          python -c "import PIL; print('pillow OK')"
 
-      - name: Build App
+      - name: Verify all 23 source modules present
+        run: |
+          python -c "
+          from pathlib import Path
+          modules = [
+            'agent_standalone','intelligence','advanced_detection',
+            'session_recorder','bulk_scanner','screen_monitor',
+            'settings_ui','onboarding','report_generator',
+            'security_mode','incident_engine','entity_tracker',
+            'compliance_reporter','benchmark','network_monitor',
+            'quarantine','whitelist','scheduler','webhook',
+            'auto_updater','extended_pii','cli','license',
+          ]
+          missing = [m for m in modules if not Path(f'{m}.py').exists()]
+          if missing:
+              print('MISSING:', missing); exit(1)
+          print(f'All {len(modules)} modules present')
+          "
+
+      - name: Syntax + encoding check
+        run: |
+          python -c "
+          import ast
+          from pathlib import Path
+          errors = []
+          for f in Path('.').glob('*.py'):
+              if 'screen_monitor_new' in f.name: continue
+              c = f.read_text(encoding='utf-8', errors='replace')
+              bad = sum(1 for ch in c if ord(ch) > 127)
+              if bad: errors.append(f'{f.name}: {bad} non-ASCII')
+              try: ast.parse(c)
+              except SyntaxError as e: errors.append(f'{f.name}: {e}')
+          if errors:
+              [print('ERROR:', e) for e in errors]; exit(1)
+          print('All modules clean')
+          "
+
+      - name: Build macOS App
         run: python build_and_package.py
 
-      - name: Verify build output
+      - name: Run accuracy benchmark
+        run: |
+          python -c "
+          import sys, importlib.util
+          sys.path.insert(0,'.')
+          spec = importlib.util.spec_from_file_location('benchmark','benchmark.py')
+          bm = importlib.util.module_from_spec(spec); spec.loader.exec_module(bm)
+          from agent_standalone import _detect
+          m = bm.run_benchmark(_detect)
+          print(f'Accuracy: {m.accuracy*100:.1f}%  FPR: {m.false_positive_rate*100:.1f}%  F1: {m.f1_ai:.3f}')
+          if m.accuracy < 0.92 or m.false_positive_rate > 0.05:
+              exit(1)
+          print('Benchmark PASSED')
+          "
+
+      - name: Verify App output
         run: |
           if [ -d "dist/AIScan.app" ]; then
             echo "Build successful"
             du -sh dist/AIScan.app
           else
-            echo "Build FAILED - AIScan.app not found"
+            echo "FAIL - AIScan.app not found"
             exit 1
           fi
 
-      - name: Create DMG
+      - name: Create DMG (Intel)
         run: |
           mkdir /tmp/dmg-intel
           cp -r dist/AIScan.app /tmp/dmg-intel/
           ln -s /Applications /tmp/dmg-intel/Applications
-          hdiutil create -volname "AIScan" -srcfolder /tmp/dmg-intel -ov -format UDZO AIScan-Mac-Intel.dmg
+          hdiutil create \
+            -volname "AIScan v6" \
+            -srcfolder /tmp/dmg-intel \
+            -ov -format UDZO \
+            AIScan-v6-Mac-Intel.dmg
+          echo "DMG created: $(du -sh AIScan-v6-Mac-Intel.dmg)"
 
       - name: Upload Mac Intel DMG
         uses: actions/upload-artifact@v4
         with:
           name: AIScan-Mac-Intel
-          path: AIScan-Mac-Intel.dmg
+          path: AIScan-v6-Mac-Intel.dmg
           retention-days: 30
