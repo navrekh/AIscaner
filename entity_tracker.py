@@ -380,13 +380,33 @@ def build_entity_dashboard(tracker: EntityTracker, data_dir: Path) -> Path:
         label_badge = (f' <span style="background:#1a1a2e;color:#888;'
                        f'padding:1px 6px;border-radius:3px;font-size:10px">'
                        f'{ep.label}</span>' if ep.label else "")
+        # Pre-compute event rows to avoid nested triple-quoted f-strings
+        # (Python 3.11 does not support backslashes or nested f"""...""" inside
+        # the {} expressions of an outer f-string; fixed for 3.11 compat)
+        ev_rows = []
+        for ev in ep.to_dict()['events']:
+            ev_col = risk_color(risk_level(ev['points'] * 3))
+            ev_rows.append(
+                '<tr style="border-bottom:1px solid #111">'
+                '<td style="padding:6px 8px;color:#555;font-size:11px;'
+                'white-space:nowrap">' + str(ev['ts_str']) + '</td>'
+                '<td style="padding:6px 8px">'
+                '<span style="color:' + ev_col + ';font-size:11px">'
+                + str(ev['event_type']) + '</span></td>'
+                '<td style="padding:6px 8px;color:#888;font-size:11px">'
+                + str(ev['detail']) + '</td>'
+                '<td style="padding:6px 8px;color:#444;font-size:11px;'
+                'text-align:right">+' + str(ev['points']) + 'pts</td>'
+                '</tr>'
+            )
+        ev_html = "".join(ev_rows)
+        fp0 = ep.folder_paths[0] if ep.folder_paths else ''
         return f"""
         <tr style="border-bottom:1px solid #1a1a2e;cursor:pointer"
             onclick="toggleEvents('{ep.entity_id}')">
           <td style="padding:12px 16px">
             <div style="color:#e8e8f0;font-weight:600">{ep.display_name}{label_badge}</div>
-            <div style="color:#444;font-size:11px;margin-top:2px">
-              {ep.folder_paths[0] if ep.folder_paths else ''}</div>
+            <div style="color:#444;font-size:11px;margin-top:2px">{fp0}</div>
           </td>
           <td style="padding:12px;text-align:center">
             <span style="color:{col};font-size:20px;font-weight:900">
@@ -402,18 +422,7 @@ def build_entity_dashboard(tracker: EntityTracker, data_dir: Path) -> Path:
         <tr id="events_{ep.entity_id}" style="display:none">
           <td colspan="7" style="padding:0 16px 12px;background:#080810">
             <table style="width:100%;border-collapse:collapse">
-              {''.join(f"""
-              <tr style="border-bottom:1px solid #111">
-                <td style="padding:6px 8px;color:#555;font-size:11px;
-                           white-space:nowrap">{ev['ts_str']}</td>
-                <td style="padding:6px 8px">
-                  <span style="color:{risk_color(risk_level(ev['points'] * 3))};
-                        font-size:11px">{ev['event_type']}</span></td>
-                <td style="padding:6px 8px;color:#888;font-size:11px">
-                  {ev['detail']}</td>
-                <td style="padding:6px 8px;color:#444;font-size:11px;
-                           text-align:right">+{ev['points']}pts</td>
-              </tr>""" for ev in ep.to_dict()['events'])}
+              {ev_html}
             </table>
           </td>
         </tr>"""
