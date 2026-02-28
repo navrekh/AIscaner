@@ -241,7 +241,7 @@ def cmd_pii(args):
 
 
 def cmd_version(args):
-    print("AIScan v5.0.0")
+    print("AIScan v6.0.0")
     print("AI Content Detection + Security + Compliance")
     print("100% offline  |  Made for India  |  DPDP compliant")
     sys.exit(0)
