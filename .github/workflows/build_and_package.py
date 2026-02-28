@@ -11,6 +11,16 @@ Changes from v5:
   - Added benchmark accuracy gate: build fails if accuracy < 92% or FPR > 5%
   - Syntax + encoding pre-flight on all 23 modules before touching PyInstaller
   - Pinned PyInstaller to 6.10.0 for reproducible builds
+
+Popup fix (v6.0.1):
+  - show_popup() now enqueues to _popup_queue instead of spawning tk.Tk() in
+    a background thread.  pystray uses icon.run_detached() so the main thread
+    is free to own the tkinter event loop.  PyInstaller must therefore bundle:
+      pystray._base        (contains run_detached())
+      pystray._util.win32  (used by pystray._win32 internally)
+      six / six.moves.queue  (imported by pystray._win32)
+      queue                (stdlib, now explicitly imported in agent_standalone)
+  - --collect-submodules pystray ensures all pystray backends are bundled
 """
 import os, sys, ast, subprocess, shutil, importlib.util
 from pathlib import Path
@@ -239,6 +249,19 @@ cmd = [
     "--hidden-import", "hashlib",
     "--hidden-import", "threading",
     "--hidden-import", "fnmatch",
+    "--hidden-import", "queue",            # explicitly used by _popup_queue
+
+    # -- pystray internals: required for icon.run_detached() --
+    # run_detached() lives in pystray._base; _win32 backend uses pystray._util.win32
+    # and imports six.moves.queue.  Without these, the tray icon starts but
+    # run_detached() fails silently and popups never appear.
+    "--hidden-import", "pystray._base",
+    "--hidden-import", "pystray._util",
+    "--hidden-import", "pystray._util.win32",
+    "--hidden-import", "six",
+    "--hidden-import", "six.moves",
+    "--hidden-import", "six.moves.queue",
+    "--collect-submodules", "pystray",
 
     # -- Excludes: keep exe size down, none of these are used --
     "--exclude-module", "sklearn",
@@ -262,6 +285,7 @@ if IS_WIN:
     cmd += [
         "--hidden-import", "watchdog.observers.winapi",
         "--hidden-import", "pystray._win32",
+        "--hidden-import", "pystray._dummy",  # fallback backend PyInstaller may need
         "--hidden-import", "win32gui",
         "--hidden-import", "win32clipboard",
         "--hidden-import", "win32con",
