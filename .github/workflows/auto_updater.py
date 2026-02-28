@@ -9,7 +9,7 @@ from pathlib import Path
 
 log = logging.getLogger("aiscan")
 
-CURRENT_VERSION = "5.0.0"
+CURRENT_VERSION = "6.0.0"
 VERSION_URL = "https://raw.githubusercontent.com/aiscan-app/aiscan/main/version.json"
 CHECK_INTERVAL_HOURS = 24
 

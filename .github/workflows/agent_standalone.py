@@ -1,5 +1,5 @@
 """
-AIScan v2.0  -  AI Document Detection Agent
+AIScan v6.0  -  AI Document Detection Agent
 Smarter detection, paragraph-level highlighting, right-click scan, history dashboard.
 """
 import sys, os, time, json, threading, logging, hashlib, re, math, webbrowser
@@ -1886,7 +1886,7 @@ def _clipboard_popup(result: ScanResult, text: str):
         log.debug(f"Clipboard popup failed: {e}")
 
 def main():
-    log.info(f"AIScan v4 starting. Data: {DATA_DIR}")
+    log.info(f"AIScan v6 starting. Data: {DATA_DIR}")
 
     # Handle right-click scan
     if len(sys.argv) >= 3 and sys.argv[1] == "--scan":

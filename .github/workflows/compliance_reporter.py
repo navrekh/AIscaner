@@ -261,7 +261,7 @@ def generate_compliance_report(
         ["Period:",       period_str],
         ["Prepared By:",  config.prepared_by],
         ["Generated:",    ts_now],
-        ["System:",       "AIScan v5 - AI & Cybersecurity Detection Platform"],
+        ["System:",       "AIScan v6 - AI & Cybersecurity Detection Platform"],
     ]
     meta_table = Table(
         [[Paragraph(f"<b>{k}</b>", S_BOLD), Paragraph(v, S_BODY)]
@@ -586,7 +586,7 @@ def generate_compliance_report(
     story.append(HRFlowable(width=W, thickness=0.5,
                              color=C_BORDER, spaceAfter=12))
     story.append(Paragraph(
-        f"This report was generated automatically by AIScan v5 on {ts_now}. "
+        f"This report was generated automatically by AIScan v6 on {ts_now}. "
         f"All events are logged with cryptographic timestamps. "
         f"Report ID: {hashlib.md5(ts_now.encode()).hexdigest()[:12].upper()}",
         S_SMALL))

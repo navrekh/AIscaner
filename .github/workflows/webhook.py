@@ -75,7 +75,7 @@ def send_webhook(config: WebhookConfig, event: dict) -> bool:
                 {"title": "File",    "value": payload["file"] or "N/A", "short": True},
                 {"title": "Entity",  "value": payload["entity"] or "N/A", "short": True},
             ],
-            "footer": f"AIScan v5 | {payload['timestamp']}",
+            "footer": f"AIScan v6 | {payload['timestamp']}",
         }],
         **payload,  # also include raw payload for non-Slack consumers
     }
@@ -168,7 +168,7 @@ def build_digest_html(events: list, period: str, org_name: str = "Your Organisat
       </table>
     </div>
     <div style="background:#f5f5f8;padding:16px;font-size:11px;color:#999;text-align:center">
-      AIScan v5 | Generated {time.strftime('%Y-%m-%d %H:%M')} |
+      AIScan v6 | Generated {time.strftime('%Y-%m-%d %H:%M')} |
       <a href="file:///AIScan/incident_dashboard.html">View Dashboard</a>
     </div>
   </div>
