@@ -130,7 +130,7 @@ jobs:
           pip install --upgrade pip
           pip install pyinstaller==6.10.0
           pip install pillow watchdog python-docx openpyxl python-pptx pypdf
-          pip install pystray plyer pywin32 comtypes
+          pip install pystray plyer pywin32 comtypes six
           pip install mss reportlab
           pip install pytesseract
         shell: cmd
@@ -147,7 +147,9 @@ jobs:
           python -c "import mss; print('mss OK')"
           python -c "import reportlab; print('reportlab OK')"
           python -c "import pystray; print('pystray OK')"
+          python -c "import six; print('six OK')"
           python -c "import watchdog; print('watchdog OK')"
+          python -c "import six.moves.queue; print('six.moves.queue OK')"
           python -c "import win32gui; print('pywin32 OK')"
           python -c "import comtypes; print('comtypes OK')"
           python -c "import PIL; print('pillow OK')"
@@ -263,7 +265,7 @@ jobs:
           pip install --upgrade pip
           pip install pyinstaller==6.10.0
           pip install pillow watchdog python-docx openpyxl python-pptx pypdf
-          pip install rumps plyer mss reportlab
+          pip install rumps plyer mss reportlab six
           pip install pytesseract
 
       - name: Install Tesseract OCR (optional)
@@ -278,6 +280,7 @@ jobs:
           python -c "import rumps; print('rumps OK')"
           python -c "import watchdog; print('watchdog OK')"
           python -c "import PIL; print('pillow OK')"
+          python -c "import six; print('six OK')"
 
       - name: Verify all 23 modules present
         run: python check_modules.py
@@ -391,7 +394,7 @@ jobs:
           pip install --upgrade pip
           pip install pyinstaller==6.10.0
           pip install pillow watchdog python-docx openpyxl python-pptx pypdf
-          pip install rumps plyer mss reportlab
+          pip install rumps plyer mss reportlab six
           pip install pytesseract
 
       - name: Install Tesseract OCR (optional)
@@ -406,6 +409,7 @@ jobs:
           python -c "import rumps; print('rumps OK')"
           python -c "import watchdog; print('watchdog OK')"
           python -c "import PIL; print('pillow OK')"
+          python -c "import six; print('six OK')"
 
       - name: Verify all 23 modules present
         run: python check_modules.py
