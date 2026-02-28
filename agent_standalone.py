@@ -2,7 +2,7 @@
 AIScan v6.0  -  AI Document Detection Agent
 Smarter detection, paragraph-level highlighting, right-click scan, history dashboard.
 """
-import sys, os, time, json, threading, logging, hashlib, re, math, webbrowser
+import sys, os, time, json, threading, logging, hashlib, re, math, webbrowser, queue
 from pathlib import Path
 from collections import Counter, deque
 from logging.handlers import RotatingFileHandler
@@ -45,6 +45,9 @@ else:
     DATA_DIR = Path.home() / ".aiscan"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Thread-safe popup queue: background threads enqueue, main thread drains
+_popup_queue: queue.Queue = queue.Queue()
 LOG_DIR = DATA_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
@@ -874,7 +877,10 @@ body {{ background:#0d0d14; color:#e8e8f0; font-family:'DM Sans',sans-serif; fon
 # ============================================================================
 
 def show_popup(result: ScanResult, filename: str):
-    threading.Thread(target=_popup, args=(result, filename), daemon=True).start()
+    # Enqueue for the main thread to show (tk.Tk() must run on main thread
+    # on Windows; spawning it from a background thread silently fails when
+    # pystray owns the main event loop via icon.run())
+    _popup_queue.put((result, filename))
 
 def _popup(result: ScanResult, filename: str):
     try:
@@ -1502,7 +1508,19 @@ def _run_tray_win(obs):
             pystray.MenuItem("Exit", on_exit)
         )
         icon = pystray.Icon("AIScan", img, "AIScan  -  AI monitoring active", menu)
-        icon.run()
+        # run_detached() starts the tray icon in a background thread,
+        # freeing the main thread for tkinter popup windows.
+        icon.run_detached()
+        log.info("Tray icon running (detached). Main thread now owns tkinter.")
+        # Drain popup queue on the main thread
+        while True:
+            try:
+                result, filename = _popup_queue.get(timeout=0.5)
+                _popup(result, filename)
+            except queue.Empty:
+                pass
+            except Exception as e:
+                log.debug(f"Popup drain error: {e}")
     except Exception as e:
         log.error(f"Tray error: {e}")
         try:
@@ -1964,7 +1982,7 @@ def main():
     if IS_WIN:
         try:
             from plyer import notification
-            notification.notify(title="AIScan", message="AI monitoring active  -  v2.0",
+            notification.notify(title="AIScan", message="AI monitoring active  -  v6.0",
                                 app_name="AIScan", timeout=4)
         except: pass
 
